@@ -407,21 +407,21 @@ with tab2:
 # ---------------------------------------------------------
 with tab3:
     st.subheader("🗺️ 宏觀與全景戰略 (Alpha Focus Playbook)")
-    st.write("系統將批次掃描您的名單，總結資金流向、篩選出 Top Picks，並生成機構級戰略指南。")
+    st.write("系統將批次掃描您的完整名單，總結資金流向、篩選出 Top Picks，並生成機構級戰略指南。")
     
     if uploaded_file:
-        uploaded_file.seek(0) # 👈👈👈 加上這行：強制把檔案指標歸零倒帶
+        uploaded_file.seek(0) # 強制把檔案指標歸零倒帶
         df = pd.read_csv(uploaded_file)
         df['SMA21_Dist_Num'] = (((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
         
-        # ... 下面的程式碼保持不變 ...
+        # 【取消過濾】直接使用完整名單進行全局掃描
+        target_df = df 
         
-        # 預設掃描 0-5% 狙擊區，以節省 API
-        sniper_df = df[(df['SMA21_Dist_Num'] >= 0) & (df['SMA21_Dist_Num'] <= 5)]
+        # 計算預估時間給使用者心理準備
+        est_minutes = (len(target_df) * 12) // 60
+        st.info(f"🎯 準備掃描目標：完整名單共 {len(target_df)} 隻股票。為確保 AI 分析最詳盡且不觸發限制，每檔標的分析將間隔 10 秒，預計需時大約 {est_minutes} 分鐘，請耐心等待。")
         
-        st.info(f"🎯 準備掃描目標：0-5% 狙擊區共 {len(sniper_df)} 隻股票。系統將自動運用快取，未分析的標的會以 2 秒間隔抓取以保護 API。")
-        
-        if st.button("🚀 啟動全局掃描與生成戰略報告", type="primary"):
+        if st.button("🚀 啟動全局深度掃描與生成戰略報告", type="primary"):
             if not api_key or not fh_api_key:
                 st.error("請確保已輸入 Gemini 與 Finnhub API Key！")
             else:
@@ -432,38 +432,50 @@ with tab3:
                 
                 client = genai.Client(api_key=api_key)
                 
-                # 1. 批次處理迴圈 (Batch Processing)
-                target_list = sniper_df['商品'].tolist()
+                # 1. 批次處理迴圈 (深度分析模式)
+                target_list = target_df['商品'].tolist()
                 for i, ticker in enumerate(target_list):
-                    status_text.text(f"⏳ 正在掃描 ({i+1}/{len(target_list)}): {ticker} ...")
+                    status_text.text(f"⏳ 正在深度分析 ({i+1}/{len(target_list)}): {ticker} ... (預計每檔需時 12 秒)")
                     
-                    sector = sniper_df[sniper_df['商品'] == ticker]['產業'].iloc[0]
+                    sector = target_df[target_df['商品'] == ticker]['產業'].iloc[0]
                     
                     # 檢查是否今日已分析且存於快取
                     if ticker in history and history[ticker].get('date') == today_date:
-                        # 已經分析過了，我們只需抓取它的基本數值加入聚合字串中
                         curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
-                        aggregated_data += f"- 【{ticker}】 板塊:{sector} | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f}\n"
+                        # 記錄到全景數據中 (加入 dist 距離參數，讓 AI 能判斷是否在狙擊區)
+                        aggregated_data += f"- 【{ticker}】 板塊:{sector} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | (已讀取快取)\n"
                     else:
-                        # 全新標的：執行完整 API 抓取與分析
+                        # 執行完整 API 抓取
                         curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
-                        news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=1, y_limit=1)
-                        news_text = "無重大新聞" if not news_pool else " | ".join(news_pool)
+                        news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=2, y_limit=2)
+                        news_text = "無重大新聞" if not news_pool else "\n".join([f"{j+1}. {text}" for j, text in enumerate(news_pool)])
                         
-                        # 偷偷在背景讓 AI 做一個個股短評存入快取 (方便側邊欄回顧)
-                        mini_prompt = f"分析 {ticker} 最新狀態：價格 ${curr_price}, RS Rating {rs_rating}, 新聞：{news_text}。以繁體中文給出簡短的偵察表格與分級矩陣。"
+                        # 🔥 火力全開：讓 AI 在背景生成最詳盡的個股報告並存入側邊欄
+                        mini_prompt = f"""
+                        # Role: 證據導向的華爾街 Swing Trading 分析師
+                        - 標的：{ticker} | 實價：${curr_price:.2f} | 距SMA21：{dist:.2f}% | 板塊：{sector} | 日期：{today_date}
+                        - 📊 參數：RSI(14): {rsi:.0f} | IBD RS Rating: {rs_rating:.0f}
+                        - 綜合新聞：\n{news_text}
+                        
+                        請輸出詳細的偵察報告，包含：
+                        1. 偵察表格 (包含資金動能邏輯與評分)
+                        2. 雙語消息與風險矩陣 (嚴格按 🚀 Tier 1 -> ⚡ Tier 2 -> ⚪ Tier 3 -> ⚠️ Risk 排序點評)
+                        """
                         try:
                             mini_response = client.models.generate_content(model='gemini-2.5-flash', contents=mini_prompt)
                             history[ticker] = {"date": today_date, "content": mini_response.text}
                             save_history(history)
-                        except: pass
+                        except Exception as e:
+                            st.warning(f"⚠️ {ticker} AI 分析超時或受限，將僅記錄基礎數據。")
                         
-                        aggregated_data += f"- 【{ticker}】 板塊:{sector} | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | 核心新聞:{news_text[:100]}...\n"
-                        time.sleep(2) # 🛑 安全節流閥：強制暫停 2 秒，避免觸發 Finnhub/Gemini Rate Limit
+                        aggregated_data += f"- 【{ticker}】 板塊:{sector} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | 核心新聞:{news_text[:150]}...\n"
+                        
+                        # 🛑 終極安全節流閥：強制暫停 10 秒
+                        time.sleep(10) 
                         
                     progress_bar.progress((i + 1) / len(target_list))
                 
-                status_text.text("✅ 所有標的掃描完畢！正在生成終極全景戰略報告...")
+                status_text.text("✅ 所有標的深度掃描完畢！正在統整宏觀與全景戰略報告...")
                 
                 # 2. 宏觀數據計算
                 vix_latest = float(vix_data.iloc[-1]) if vix_data is not None else "未知"
@@ -476,7 +488,7 @@ with tab3:
                 - 恐慌指數 (VIX) 最新值：{vix_latest}
                 - 基準日：{today_date}
 
-                ## 1. 狙擊池數據 (以下是本次掃描 0-5% 狙擊區的所有強勢股狀態)
+                ## 1. 全市場掃描數據 (以下是本次掃描的完整強勢股清單狀態)
                 {aggregated_data}
 
                 ## 2. 核心任務與輸出格式 (嚴格遵守)
@@ -486,10 +498,10 @@ with tab3:
                 [統計上述名單中出現頻率最高、資金最集中的前 5 大板塊，並分析為什麼資金正在湧入這些板塊]
 
                 ### 🌟 2. Alpha Focus Top Picks (精選 5-10 檔)
-                [從名單中，挑選「RS Rating 最高 + 消息面最強 (Tier 1) + 板塊對位」的標的。請詳細講解推薦理由與潛在催化劑]
+                [從名單中，挑選出「距離 SMA21 較近 (0-5%) + RS Rating 最高 + 消息面最強 (Tier 1)」的最佳標的。請詳細講解推薦理由與潛在催化劑]
 
                 ### 🌍 3. 宏觀環境分析 (Macro View)
-                [提出 3-6 個核心宏觀觀點，請結合目前的 VIX 狀態、降息/通膨預期、以及季節性效應]
+                [提出 3-6 個核心宏觀觀點，請結合目前的 VIX 狀態、板塊資金輪動方向、以及季節性效應]
 
                 ### ⚔️ 4. 戰略建議 (The Swing Playbook)
                 [給出當前環境下的具體操作指南：進攻比例(例如 70% 股票 30% 現金)、防守策略、以及對中小型股或權值股的佈局建議]
