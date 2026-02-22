@@ -83,15 +83,85 @@ def get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=3, y_limit=2)
         
     return news_pool
 
+# --- IBD RS Rating 計算邏輯 (移植自 TradingView Pine Script) ---
+@st.cache_data(ttl=3600)
+def get_spy_benchmark():
+    """快取大盤數據以節省下載時間"""
+    spy = yf.download("SPY", period="1y", interval="1d", progress=False)
+    if not spy.empty:
+        close = spy['Close'].squeeze()
+        if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
+        return close
+    return None
+
+def calculate_rs_rating(stock_close, spy_close):
+    """計算 IBD 風格的 1-99 相對強度評級"""
+    if stock_close is None or spy_close is None or len(stock_close) < 10 or len(spy_close) < 10:
+        return 50  # 數據不足時返回中性 50
+
+    # 對齊 TradingView 計算週期 (63, 126, 189, 252)
+    n63 = min(63, len(stock_close)-1, len(spy_close)-1)
+    n126 = min(126, len(stock_close)-1, len(spy_close)-1)
+    n189 = min(189, len(stock_close)-1, len(spy_close)-1)
+    n252 = min(252, len(stock_close)-1, len(spy_close)-1)
+
+    # 標的季度表現
+    perf_T63 = stock_close.iloc[-1] / stock_close.iloc[-1 - n63]
+    perf_T126 = stock_close.iloc[-1] / stock_close.iloc[-1 - n126]
+    perf_T189 = stock_close.iloc[-1] / stock_close.iloc[-1 - n189]
+    perf_T252 = stock_close.iloc[-1] / stock_close.iloc[-1 - n252]
+
+    # SPY大盤季度表現
+    perf_S63 = spy_close.iloc[-1] / spy_close.iloc[-1 - n63]
+    perf_S126 = spy_close.iloc[-1] / spy_close.iloc[-1 - n126]
+    perf_S189 = spy_close.iloc[-1] / spy_close.iloc[-1 - n189]
+    perf_S252 = spy_close.iloc[-1] / spy_close.iloc[-1 - n252]
+
+    # 加權得分 (近一季權重加倍)
+    rs_stock = 0.4 * perf_T63 + 0.2 * perf_T126 + 0.2 * perf_T189 + 0.2 * perf_T252
+    rs_ref = 0.4 * perf_S63 + 0.2 * perf_S126 + 0.2 * perf_S189 + 0.2 * perf_S252
+
+    if rs_ref == 0: return 50
+    totalRsScore = (rs_stock / rs_ref) * 100
+
+    # 逼近分位數的常數
+    first, scnd, thrd, frth, ffth, sxth, svth = 195.93, 117.11, 99.04, 91.66, 80.96, 53.64, 24.86
+
+    def f_attributePercentile(score, tallerPerf, smallerPerf, rangeUp, rangeDn, weight):
+        sum_val = score + (score - smallerPerf) * weight
+        if sum_val > tallerPerf - 1: sum_val = tallerPerf - 1
+        k1 = smallerPerf / rangeDn
+        k2 = (tallerPerf - 1) / rangeUp
+        k3 = (k1 - k2) / (tallerPerf - 1 - smallerPerf) if (tallerPerf - 1 - smallerPerf) != 0 else 0
+        denom = (k1 - k3 * (score - smallerPerf))
+        if denom == 0: return rangeDn
+        RsRating = sum_val / denom
+        if RsRating > rangeUp: RsRating = rangeUp
+        if RsRating < rangeDn: RsRating = rangeDn
+        return RsRating
+
+    if totalRsScore >= first: return 99
+    if totalRsScore <= svth: return 1
+
+    if scnd <= totalRsScore < first: return f_attributePercentile(totalRsScore, first, scnd, 98, 90, 0.33)
+    elif thrd <= totalRsScore < scnd: return f_attributePercentile(totalRsScore, scnd, thrd, 89, 70, 2.1)
+    elif frth <= totalRsScore < thrd: return f_attributePercentile(totalRsScore, thrd, frth, 69, 50, 0)
+    elif ffth <= totalRsScore < frth: return f_attributePercentile(totalRsScore, frth, ffth, 49, 30, 0)
+    elif sxth <= totalRsScore < ffth: return f_attributePercentile(totalRsScore, ffth, sxth, 29, 10, 0)
+    elif svth <= totalRsScore < sxth: return f_attributePercentile(totalRsScore, sxth, svth, 9, 2, 0)
+
+    return 50
+
 # --- 動態技術數據計算 ---
-def get_dynamic_stats(ticker):
+def get_dynamic_stats(ticker, spy_close):
     yf_ticker = ticker
     if str(ticker).isdigit() and len(str(ticker)) == 5:
         yf_ticker = f"{str(ticker)[1:]}.HK"
         
-    df = yf.download(yf_ticker, period="3mo", interval="1d", progress=False)
+    # 改為抓取一年期資料以配合 RS Rating 運算
+    df = yf.download(yf_ticker, period="1y", interval="1d", progress=False)
     if df.empty:
-        return 0, 0, 0
+        return 0, 0, 0, 50
     
     close = df['Close'].squeeze()
     if isinstance(close, pd.DataFrame):
@@ -109,19 +179,21 @@ def get_dynamic_stats(ticker):
     rs = ema_up / ema_down
     rsi = 100 - (100 / (1 + rs)).iloc[-1]
     
-    return current_price, dist, float(rsi)
+    # 計算 IBD RS Rating
+    rs_rating = calculate_rs_rating(close, spy_close)
+    
+    return current_price, dist, float(rsi), float(rs_rating)
 
 if "stock_selector" not in st.session_state:
     st.session_state.stock_selector = None
 
 # ================= 網頁主體 =================
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 三引擎量化交易系統 v6.2")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v7.0")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
 
-# 【安全升級】從 Streamlit Secrets 安全讀取，如果沒設定就返回空字串。GitHub 代碼絕對乾淨！
 default_gemini = st.secrets.get("GEMINI_API_KEY", "")
 default_finnhub = st.secrets.get("FINNHUB_API_KEY", "")
 
@@ -141,6 +213,9 @@ if history:
             st.session_state.stock_selector = ticker
 else:
     st.sidebar.caption("目前尚無分析紀錄。")
+
+# ================= 預載入大盤 SPY 資料 =================
+spy_data = get_spy_benchmark()
 
 # ================= 雙分頁架構 =================
 tab1, tab2 = st.tabs(["🎯 偵察模式 (尋找強勢回踩)", "🛡️ 守護者模式 (富途持倉管理)"])
@@ -188,13 +263,14 @@ with tab1:
             selected_stock = st.selectbox("選擇要分析的標的：", options, key="stock_selector")
             
             stock_data = df[df['商品'] == selected_stock].iloc[0]
-            real_price = stock_data['價格']
-            real_sma_dist = stock_data['SMA21_Dist_Num']
-            real_rsi = display_df[display_df['商品'] == selected_stock]['相對強弱指標 (14) 1天'].iloc[0]
             real_sector = stock_data.get('產業', '未知')
             today_date = datetime.now().strftime("%Y-%m-%d")
 
             st.write(f"#### 📈 {selected_stock} 交互式 K 線圖")
+            # 獲取價格與動能 (RS Rating)
+            real_price, real_sma_dist, real_rsi, real_rs_rating = get_dynamic_stats(selected_stock, spy_data)
+            
+            # K線圖繪製
             hist_data = yf.download(selected_stock, period="6mo", interval="1d", progress=False)
             if not hist_data.empty:
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.3, 0.7])
@@ -241,18 +317,26 @@ with tab1:
                             # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 偵察模式)
                             
                             ## 0. 數據審計輸入 (Anti-Hallucination)
-                            - 標的：{selected_stock} | 實時現價：${real_price:.2f} | 距離 SMA21：{real_sma_dist:.2f}% | RSI (14)：{real_rsi} | 板塊：{real_sector} | 基準日：{today_date}
+                            - 標的：{selected_stock} | 實時現價：${real_price:.2f} | 距離 SMA21：{real_sma_dist:.2f}% | 板塊：{real_sector} | 基準日：{today_date}
+                            - 📊 **核心技術參數**：
+                                - **RSI (14)**：{real_rsi:.0f} (判斷超買超賣)
+                                - **IBD RS Rating (相對強度 1-99)**：{real_rs_rating:.0f}
                             
                             ## 1. 待分析綜合新聞流 (Finnhub + Google + Yahoo)：
                             {news_text}
                             
-                            ## 2. 輸出格式要求 (嚴格遵守)
+                            ## 2. 分析師動能判斷法則 (強制執行)：
+                            - 結合 RS Rating 判斷新聞動能：
+                                - 如果 RS > 80 且出現 Tier 1 消息：這是機構強烈控盤的「真突破/強勢股」，建議高度關注 (健康回踩/買入)。
+                                - 如果 RS < 40 且出現 Tier 1 消息：資金面上方套牢賣壓極重，這通常是「死貓反彈」或逃命波，必須在風險矩陣中嚴格警告。
+                            
+                            ## 3. 輸出格式要求 (嚴格遵守)
                             
                             ### 第一部分：偵察表格
                             `[偵察基準日: {today_date} | 數據源: 三引擎 API | 基準價: ${real_price:.2f} | 美東時間: 盤後]`
-                            | 代碼 | 板塊 | 公司簡介 | 最新狀態 (Price & % vs SMA21) | 核心催化劑(摘要) | 資金邏輯 | 狀態評價 | 評分 |
+                            | 代碼 | 板塊 | 參數概覽 (RSI / RS Rating) | 最新狀態 (Price & % vs SMA21) | 核心催化劑(摘要) | 資金動能邏輯 | 狀態評價 | 評分 |
                             | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-                            | {selected_stock} | {real_sector} | [在此填寫50字內主營業務] | **${real_price:.2f}** ({real_sma_dist:.2f}%) | [一句話總結 Tier 1 或 Risk] | [分析資金湧入或撤出的邏輯] | [超買 / 剛突破 / 健康回踩] | [1-100] |
+                            | {selected_stock} | {real_sector} | RSI: {real_rsi:.0f} <br> **RS: {real_rs_rating:.0f}** | **${real_price:.2f}** ({real_sma_dist:.2f}%) | [一句話總結 Tier 1 或 Risk] | [結合RS Rating分析動能真偽] | [死貓反彈/健康回踩/強勢突破] | [1-100] |
                             
                             ### 第二部分：消息與風險矩陣明細 (雙語對照)
                             **【重要排序指令】：必須嚴格按照以下順序排列：1. 🚀 Tier 1 -> 2. ⚡ Tier 2 -> 3. ⚪ Tier 3 -> 4. ⚠️ Risk。**
@@ -275,9 +359,6 @@ with tab1:
 # ---------------------------------------------------------
 # TAB 2: 守護者模式 (Guardian Mode)
 # ---------------------------------------------------------
-# ---------------------------------------------------------
-# TAB 2: 守護者模式 (Guardian Mode)
-# ---------------------------------------------------------
 with tab2:
     st.subheader("🛡️ 守護者模式：富途持倉健檢與動態止損")
     if futu_file:
@@ -291,7 +372,7 @@ with tab2:
             if not api_key or not fh_api_key:
                 st.error("請確保已在左側邊欄或 Streamlit Secrets 設定 API Key！")
             else:
-                with st.spinner('正在獲取最新技術指標與三引擎新聞，進行深度持倉審計...'):
+                with st.spinner('正在獲取最新技術指標、計算 IBD 相對強度與三引擎新聞，進行深度持倉審計...'):
                     try:
                         portfolio_data = ""
                         today_date = datetime.now().strftime("%Y-%m-%d")
@@ -301,9 +382,8 @@ with tab2:
                             cost_price = row.get('攤薄成本價', 'N/A')
                             profit_pct = row.get('盈虧比例', 'N/A')
                             
-                            curr_price, dist, rsi = get_dynamic_stats(ticker)
+                            curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
                             
-                            # 稍微放寬新聞抓取量，以提供足夠的分析素材 (共 7 條)
                             news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=2, y_limit=2)
                             
                             if not news_pool:
@@ -311,16 +391,15 @@ with tab2:
                             else:
                                 n_text = "\n".join([f"{i+1}. {text}" for i, text in enumerate(news_pool)])
                             
-                            portfolio_data += f"\n====================\n【{ticker}】\n- 券商成本: ${cost_price} | 目前盈虧: {profit_pct}\n- 實時現價: ${curr_price:.2f} | 距SMA21: {dist:.2f}% | RSI: {rsi:.0f}\n- 綜合新聞流:\n{n_text}\n"
+                            portfolio_data += f"\n====================\n【{ticker}】\n- 券商成本: ${cost_price} | 目前盈虧: {profit_pct}\n- 實時現價: ${curr_price:.2f} | 距SMA21: {dist:.2f}% | RSI: {rsi:.0f} | **IBD RS Rating: {rs_rating:.0f}**\n- 綜合新聞流:\n{n_text}\n"
 
                         client = genai.Client(api_key=api_key)
                         
-                        # 全新排版的守護者 Prompt
                         guardian_prompt = f"""
                         # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 守護者模式)
                         
                         ## 0. 數據審計協議 (Data Integrity Protocol 3.0)
-                        以下是我的真實持倉數據，包含三引擎新聞，請根據這些數據給我深度建議：
+                        以下是我的真實持倉數據，包含三引擎新聞與 IBD 動能參數，請根據這些數據給我深度建議：
                         {portfolio_data}
                         基準日：{today_date}
                         
@@ -329,19 +408,20 @@ with tab2:
                         `[數據源: 三引擎 API/Futu | 審計基準日: {today_date} | 美東時間: 盤後]`
                         
                         ### 📊 1. 持倉速覽總表 (Overview)
-                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 目前盈虧 | 趨勢健康度 (RSI與量價) | 決策建議 | 守護策略 (具體止損/止盈位) |
+                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 目前盈虧 | 動能參數 (RSI / RS Rating) | 決策建議 | 守護策略 (具體止損/止盈位) |
                         | :--- | :--- | :--- | :--- | :--- | :--- |
                         (請為我選擇的每一檔股票生成一行總結)
                         
                         ---
                         ### 🔬 2. 個股深度消息與風險矩陣 (Deep Dive)
                         (請為上述每一檔持倉股票，單獨列出新聞的 Tier 評級與雙語點評。必須嚴格按照 1. 🚀 Tier 1 -> 2. ⚡ Tier 2 -> 3. ⚪ Tier 3 -> 4. ⚠️ Risk 排序)
+                        (點評時，務必結合 RS Rating 告訴我，目前資金的控盤強度是否支持該股票繼續持有，或是已經轉弱需要 Trim！)
                         
                         (針對每一檔持倉，請使用以下格式：)
-                        #### 📌 [股票代碼] 消息面剖析
+                        #### 📌 [股票代碼] 消息面與動能剖析
                         - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
                           - **中文翻譯**：...
-                          - **守護者點評**：[這則消息對我們目前的持倉有什麼具體影響？利多是否兌現？利空是否致命？]
+                          - **守護者點評**：[這則消息對我們目前的持倉有什麼具體影響？結合動能評級，該股票還能抱嗎？]
                         - ⚠️ **[Risk]** (Original English Title Here) [標註新聞來源]
                           - **中文翻譯**：...
                           - **守護者點評**：...
@@ -349,7 +429,7 @@ with tab2:
                         ---
                         ### 📋 3. 持倉組合總結 (Portfolio Playbook)
                         1. **組合風險警告**：是否有過度曝險的狀況？資金分配是否合理？
-                        2. **急迫行動清單**：列出必須在今日內做出決策的股票（例如破位、虧損擴大、或利多出盡需獲利了結）。
+                        2. **急迫行動清單**：列出必須在今日內做出決策的股票（例如破位、動能 RS < 50 且虧損擴大、或利多出盡需獲利了結）。
                         3. **動態止損指南**：根據當前大盤環境，建議如何調整整體的移動止盈策略。
                         """
                         
@@ -362,4 +442,3 @@ with tab2:
                         st.error(f"分析時發生錯誤: {e}")
     else:
         st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
-
