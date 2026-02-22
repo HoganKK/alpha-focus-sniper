@@ -3,4 +3,4 @@ pandas
 plotly
 yfinance
 google-genai
-feedparser
+requests
