@@ -5,11 +5,13 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 from google import genai
 import requests
+import feedparser
+import urllib.parse
 from datetime import datetime, timedelta
 import json
 import os
 
-# --- 歷史紀錄系統設定 ---
+# --- 歷史紀錄快取系統 ---
 HISTORY_FILE = "alpha_focus_history.json"
 
 def load_history():
@@ -24,9 +26,8 @@ def save_history(history_data):
 
 history = load_history()
 
-# --- Finnhub 新聞引擎與動態數據計算 ---
-def get_finnhub_news(ticker, api_key, limit=8):
-    # 處理港股代碼邏輯 (09988 -> 9988.HK)
+# --- 核心引擎：Finnhub 基礎抓取 ---
+def get_finnhub_news(ticker, api_key, limit=4):
     ticker_fh = ticker
     if str(ticker).isdigit() and len(str(ticker)) == 5:
         ticker_fh = f"{str(ticker)[1:]}.HK"
@@ -41,16 +42,46 @@ def get_finnhub_news(ticker, api_key, limit=8):
             news_list = []
             for item in res[:limit]:
                 title = item.get('headline', '')
-                summary = item.get('summary', '')[:80] # 取前 80 字摘要幫助 AI 判斷
+                summary = item.get('summary', '')[:80]
                 if title:
                     news_list.append(f"【{title}】 {summary}...")
             return news_list
-    except Exception as e:
+    except:
         return []
     return []
 
+# --- 🌟 超級引擎：三源新聞聚合器 ---
+def get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=3, y_limit=2):
+    news_pool = []
+    
+    # 1. Finnhub 專業新聞
+    fh_news = get_finnhub_news(ticker, fh_api_key, limit=fh_limit)
+    for n in fh_news:
+        news_pool.append(f"[Finnhub 機構] {n}")
+        
+    # 2. Google News 廣泛搜尋
+    try:
+        query = urllib.parse.quote(f"{ticker} stock news")
+        feed = feedparser.parse(f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en")
+        for entry in feed.entries[:g_limit]:
+            news_pool.append(f"[Google 財經] {entry.title}")
+    except:
+        pass
+        
+    # 3. Yahoo Finance 實時快訊
+    try:
+        y_info = yf.Ticker(ticker)
+        for n in y_info.news[:y_limit]:
+            title = n.get('title') or n.get('headline') or ''
+            if title:
+                news_pool.append(f"[Yahoo 快訊] {title}")
+    except:
+        pass
+        
+    return news_pool
+
+# --- 動態技術數據計算 (給守護者模式用) ---
 def get_dynamic_stats(ticker):
-    """為不在名單內的持倉股動態計算技術指標"""
     yf_ticker = ticker
     if str(ticker).isdigit() and len(str(ticker)) == 5:
         yf_ticker = f"{str(ticker)[1:]}.HK"
@@ -67,7 +98,6 @@ def get_dynamic_stats(ticker):
     sma21 = float(close.rolling(21).mean().iloc[-1])
     dist = ((current_price - sma21) / sma21) * 100
     
-    # 標準 RSI (Wilder's Smoothing) 計算
     delta = close.diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
@@ -83,7 +113,7 @@ if "stock_selector" not in st.session_state:
 
 # ================= 網頁主體 =================
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 雙核心量化交易系統 v5.0")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v6.0")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
@@ -114,11 +144,10 @@ with tab1:
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         
-        # 解決 20 vs 21 的數量 Bug：先精確四捨五入再過濾
+        # 精確處理浮點數，解決數量對不上的 Bug
         df['SMA21_Dist_Num'] = (((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
         df['縮量狀態'] = df['成交量 1天'] < df['平均成交量 10天']
         
-        # 視覺化格式處理 (價格%, RSI 整數)
         display_df = df.copy()
         display_df['價格變化 % 1週'] = display_df['價格變化 % 1週'].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "N/A")
         display_df['相對強弱指標 (14) 1天'] = display_df['相對強弱指標 (14) 1天'].fillna(0).round().astype(int)
@@ -158,7 +187,6 @@ with tab1:
             real_sector = stock_data.get('產業', '未知')
             today_date = datetime.now().strftime("%Y-%m-%d")
 
-            # 繪製 K 線圖
             st.write(f"#### 📈 {selected_stock} 交互式 K 線圖")
             hist_data = yf.download(selected_stock, period="6mo", interval="1d", progress=False)
             if not hist_data.empty:
@@ -184,48 +212,23 @@ with tab1:
                 st.info(f"📂 目前顯示的是雲端歷史紀錄 ({history[selected_stock]['date']})。閱讀歷史紀錄不消耗 API。")
                 with st.container(border=True):
                     st.markdown(history[selected_stock]['content'])
-                analyze_button = st.button("🔄 重新深度掃描 (更新 Finnhub 新聞)")
+                analyze_button = st.button("🔄 重新深度掃描 (啟動三引擎更新)")
             else:
-                analyze_button = st.button("🚀 啟動數據審計協議 (Data Integrity Protocol)", type="primary")
+                analyze_button = st.button("🚀 啟動數據審計協議 (三引擎融合)", type="primary")
 
             if analyze_button:
                 if not api_key or not fh_api_key:
                     st.error("請確保已輸入 Gemini 與 Finnhub API Key！")
                 else:
-                    with st.spinner('正在透過 Finnhub 獲取專業機構新聞並由 AI 分析中...'):
+                    with st.spinner('正在從 Finnhub、Google 及 Yahoo 聚合情報並由 AI 審計中...'):
                         try:
-                            # 1. 抓取 Finnhub 新聞
-                            # ================= 三引擎新聞池 (Finnhub + Google + Yahoo) =================
-                            news_pool = []
+                            # 啟動三引擎收集新聞
+                            news_pool = get_triple_engine_news(selected_stock, fh_api_key, fh_limit=4, g_limit=3, y_limit=2)
                             
-                            # 1. Finnhub 專業新聞 (取前 4 條)
-                            fh_news = get_finnhub_news(selected_stock, fh_api_key, limit=4)
-                            for n in fh_news:
-                                news_pool.append(f"[Finnhub 機構] {n}")
-                            
-                            # 2. Google News 廣泛搜尋 (取前 3 條)
-                            query = urllib.parse.quote(f"{selected_stock} stock news")
-                            feed = feedparser.parse(f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en")
-                            for entry in feed.entries[:3]:
-                                news_pool.append(f"[Google 財經] {entry.title}")
-                            
-                            # 3. Yahoo Finance 實時快訊 (取前 2 條)
-                            try:
-                                y_info = yf.Ticker(selected_stock)
-                                for n in y_info.news[:2]:
-                                    title = n.get('title') or n.get('headline') or ''
-                                    if title:
-                                        news_pool.append(f"[Yahoo 快訊] {title}")
-                            except:
-                                pass # 忽略 Yahoo 偶發的連線錯誤
-                            
-                            # 合併並整理給 Gemini
                             if not news_pool:
                                 news_text = "過去 14 天內無重大新聞。"
                             else:
-                                # 限制最多丟給 AI 8~9 條綜合新聞
-                                news_text = "\n".join([f"{i+1}. {text}" for i, text in enumerate(news_pool[:9])])
-                            # =========================================================================
+                                news_text = "\n".join([f"{i+1}. {text}" for i, text in enumerate(news_pool)])
                             
                             client = genai.Client(api_key=api_key)
                             prompt = f"""
@@ -234,13 +237,13 @@ with tab1:
                             ## 0. 數據審計輸入 (Anti-Hallucination)
                             - 標的：{selected_stock} | 實時現價：${real_price:.2f} | 距離 SMA21：{real_sma_dist:.2f}% | RSI (14)：{real_rsi} | 板塊：{real_sector} | 基準日：{today_date}
                             
-                            ## 1. 待分析專業新聞流 (Finnhub)：
+                            ## 1. 待分析綜合新聞流 (Finnhub + Google + Yahoo)：
                             {news_text}
                             
                             ## 2. 輸出格式要求 (嚴格遵守)
                             
                             ### 第一部分：偵察表格
-                            `[偵察基準日: {today_date} | 數據源: Finnhub API | 基準價: ${real_price:.2f} | 美東時間: 盤後]`
+                            `[偵察基準日: {today_date} | 數據源: 三引擎 API | 基準價: ${real_price:.2f} | 美東時間: 盤後]`
                             | 代碼 | 板塊 | 公司簡介 | 最新狀態 (Price & % vs SMA21) | 核心催化劑(摘要) | 資金邏輯 | 狀態評價 | 評分 |
                             | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
                             | {selected_stock} | {real_sector} | [在此填寫50字內主營業務] | **${real_price:.2f}** ({real_sma_dist:.2f}%) | [一句話總結 Tier 1 或 Risk] | [分析資金湧入或撤出的邏輯] | [超買 / 剛突破 / 健康回踩] | [1-100] |
@@ -248,7 +251,7 @@ with tab1:
                             ### 第二部分：消息與風險矩陣明細 (雙語對照)
                             **【重要排序指令】：必須嚴格按照以下順序排列：1. 🚀 Tier 1 -> 2. ⚡ Tier 2 -> 3. ⚪ Tier 3 -> 4. ⚠️ Risk。**
                             
-                            - 🚀 **[Tier 1]** (Original English Title Here)
+                            - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
                               - **中文翻譯**：...
                               - **分析點評**：...
                             """
@@ -271,7 +274,6 @@ with tab2:
     if futu_file:
         futu_df = pd.read_csv(futu_file)
         
-        # 讓用戶挑選要健檢的股票 (自動讀取富途代碼)
         my_holdings = futu_df['代碼'].astype(str).tolist()
         st.write("已成功載入您的富途持倉。請選擇要執行健檢的標的：")
         selected_holdings = st.multiselect("選擇持倉：", my_holdings, default=my_holdings)
@@ -280,24 +282,21 @@ with tab2:
             if not api_key or not fh_api_key:
                 st.error("請確保已輸入 Gemini 與 Finnhub API Key！")
             else:
-                with st.spinner('正在獲取最新技術指標與 Finnhub 新聞，進行持倉審計...'):
+                with st.spinner('正在獲取最新技術指標與三引擎新聞，進行持倉審計...'):
                     try:
                         portfolio_data = ""
                         today_date = datetime.now().strftime("%Y-%m-%d")
                         
-                        # 迴圈處理每一個選中的持倉
                         for ticker in selected_holdings:
-                            # 從富途 CSV 提取成本與盈虧
                             row = futu_df[futu_df['代碼'] == ticker].iloc[0]
                             cost_price = row.get('攤薄成本價', 'N/A')
                             profit_pct = row.get('盈虧比例', 'N/A')
                             
-                            # 動態獲取技術指標
                             curr_price, dist, rsi = get_dynamic_stats(ticker)
                             
-                            # 獲取 Finnhub 新聞
-                            news_list = get_finnhub_news(ticker, fh_api_key, limit=3)
-                            n_text = "無重大新聞" if not news_list else " | ".join(news_list)
+                            # 守護者模式的三引擎抓取 (限制每股只抓少量最核心的新聞，避免 AI 負載過重)
+                            news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=2, g_limit=1, y_limit=1)
+                            n_text = "無重大新聞" if not news_pool else " | ".join(news_pool)
                             
                             portfolio_data += f"【{ticker}】券商成本:${cost_price} | 目前盈虧:{profit_pct} | 實時現價:${curr_price:.2f} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | 核心新聞: {n_text}\n"
 
@@ -306,7 +305,7 @@ with tab2:
                         # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 守護者模式)
                         
                         ## 0. 數據審計協議 (Data Integrity Protocol 3.0)
-                        以下是我的真實持倉數據，請根據這些數據給我具體建議：
+                        以下是我的真實持倉數據，包含三引擎新聞，請根據這些數據給我具體建議：
                         {portfolio_data}
                         基準日：{today_date}
                         
@@ -314,10 +313,10 @@ with tab2:
                         判斷趨勢健康度，並給出 Hold(續抱)、Trim(減倉)、Sell(清倉) 或 Add(加倉) 的決策。
                         
                         ## 2. 輸出格式 (嚴格使用此 Markdown 格式)
-                        `[數據源: Finnhub/Futu | 審計基準日: {today_date} | 美東時間: 盤後]`
+                        `[數據源: 三引擎 API/Futu | 審計基準日: {today_date} | 美東時間: 盤後]`
                         
                         ### 持倉個股審計表
-                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 趨勢健康度 (RSI與量價) | 消息與風險矩陣 (Tier 1+2+Risk) | 決策建議 | 守護策略 (具體止損位) |
+                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 趨勢健康度 (RSI與量價) | 消息與風險矩陣 (綜合評估) | 決策建議 | 守護策略 (具體止損位) |
                         | :--- | :--- | :--- | :--- | :--- | :--- |
                         (請為我選擇的每一檔股票生成一行分析)
                         
@@ -334,4 +333,5 @@ with tab2:
                             
                     except Exception as e:
                         st.error(f"分析時發生錯誤: {e}")
-
+    else:
+        st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
