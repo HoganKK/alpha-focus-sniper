@@ -195,11 +195,37 @@ with tab1:
                     with st.spinner('正在透過 Finnhub 獲取專業機構新聞並由 AI 分析中...'):
                         try:
                             # 1. 抓取 Finnhub 新聞
-                            news_list = get_finnhub_news(selected_stock, fh_api_key)
-                            if not news_list:
+                            # ================= 三引擎新聞池 (Finnhub + Google + Yahoo) =================
+                            news_pool = []
+                            
+                            # 1. Finnhub 專業新聞 (取前 4 條)
+                            fh_news = get_finnhub_news(selected_stock, fh_api_key, limit=4)
+                            for n in fh_news:
+                                news_pool.append(f"[Finnhub 機構] {n}")
+                            
+                            # 2. Google News 廣泛搜尋 (取前 3 條)
+                            query = urllib.parse.quote(f"{selected_stock} stock news")
+                            feed = feedparser.parse(f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en")
+                            for entry in feed.entries[:3]:
+                                news_pool.append(f"[Google 財經] {entry.title}")
+                            
+                            # 3. Yahoo Finance 實時快訊 (取前 2 條)
+                            try:
+                                y_info = yf.Ticker(selected_stock)
+                                for n in y_info.news[:2]:
+                                    title = n.get('title') or n.get('headline') or ''
+                                    if title:
+                                        news_pool.append(f"[Yahoo 快訊] {title}")
+                            except:
+                                pass # 忽略 Yahoo 偶發的連線錯誤
+                            
+                            # 合併並整理給 Gemini
+                            if not news_pool:
                                 news_text = "過去 14 天內無重大新聞。"
                             else:
-                                news_text = "\n".join([f"{i+1}. {text}" for i, text in enumerate(news_list)])
+                                # 限制最多丟給 AI 8~9 條綜合新聞
+                                news_text = "\n".join([f"{i+1}. {text}" for i, text in enumerate(news_pool[:9])])
+                            # =========================================================================
                             
                             client = genai.Client(api_key=api_key)
                             prompt = f"""
@@ -308,3 +334,4 @@ with tab2:
                             
                     except Exception as e:
                         st.error(f"分析時發生錯誤: {e}")
+
