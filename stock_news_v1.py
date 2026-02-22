@@ -29,6 +29,7 @@ history = load_history()
 # --- 核心引擎：Finnhub 基礎抓取 ---
 def get_finnhub_news(ticker, api_key, limit=4):
     ticker_fh = ticker
+    # 處理富途港股代碼邏輯 (如 09988 -> 9988.HK)
     if str(ticker).isdigit() and len(str(ticker)) == 5:
         ticker_fh = f"{str(ticker)[1:]}.HK"
         
@@ -70,7 +71,10 @@ def get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=3, y_limit=2)
         
     # 3. Yahoo Finance 實時快訊
     try:
-        y_info = yf.Ticker(ticker)
+        yf_ticker = ticker
+        if str(ticker).isdigit() and len(str(ticker)) == 5:
+            yf_ticker = f"{str(ticker)[1:]}.HK"
+        y_info = yf.Ticker(yf_ticker)
         for n in y_info.news[:y_limit]:
             title = n.get('title') or n.get('headline') or ''
             if title:
@@ -113,13 +117,17 @@ if "stock_selector" not in st.session_state:
 
 # ================= 網頁主體 =================
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 三引擎量化交易系統 v6.0")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v6.1")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
-# 系統會優先嘗試從雲端機密讀取，如果沒有才顯示空白框讓你輸入
-default_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
-api_key = st.sidebar.text_input("Gemini API Key", value=default_gemini_key, type="password")
+
+# 自動載入 API Key，若 Streamlit Secrets 有設定則優先讀取，否則使用預設值
+default_gemini = st.secrets.get("GEMINI_API_KEY", "AIzaSyCBGNM3YT7ydNha9PMfgUktiAHXWeYDZvk")
+default_finnhub = st.secrets.get("FINNHUB_API_KEY", "d6dgqnhr01qm89pjf6fg")
+
+api_key = st.sidebar.text_input("Gemini API Key", value=default_gemini, type="password")
+fh_api_key = st.sidebar.text_input("Finnhub API Key", value=default_finnhub, type="password")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📂 數據庫上傳區")
@@ -336,4 +344,3 @@ with tab2:
                         st.error(f"分析時發生錯誤: {e}")
     else:
         st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
-
