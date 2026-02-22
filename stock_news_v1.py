@@ -410,16 +410,15 @@ with tab3:
     st.write("系統將批次掃描您的完整名單，總結資金流向、篩選出 Top Picks，並生成機構級戰略指南。")
     
     if uploaded_file:
-        uploaded_file.seek(0) # 強制把檔案指標歸零倒帶
+        uploaded_file.seek(0)
         df = pd.read_csv(uploaded_file)
         df['SMA21_Dist_Num'] = (((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
         
-        # 【取消過濾】直接使用完整名單進行全局掃描
         target_df = df 
         
-        # 計算預估時間給使用者心理準備
-        est_minutes = (len(target_df) * 12) // 60
-        st.info(f"🎯 準備掃描目標：完整名單共 {len(target_df)} 隻股票。為確保 AI 分析最詳盡且不觸發限制，每檔標的分析將間隔 10 秒，預計需時大約 {est_minutes} 分鐘，請耐心等待。")
+        # 計算更寬裕的預估時間
+        est_minutes = (len(target_df) * 15) // 60
+        st.info(f"🎯 準備掃描目標：完整名單共 {len(target_df)} 隻股票。已啟動「終極防斷線重試機制」，遇到 API 限制會自動休眠再戰。預計需時 {est_minutes} 分鐘以上，請安心掛機等待。")
         
         if st.button("🚀 啟動全局深度掃描與生成戰略報告", type="primary"):
             if not api_key or not fh_api_key:
@@ -432,25 +431,20 @@ with tab3:
                 
                 client = genai.Client(api_key=api_key)
                 
-                # 1. 批次處理迴圈 (深度分析模式)
                 target_list = target_df['商品'].tolist()
                 for i, ticker in enumerate(target_list):
-                    status_text.text(f"⏳ 正在深度分析 ({i+1}/{len(target_list)}): {ticker} ... (預計每檔需時 12 秒)")
+                    status_text.text(f"⏳ 正在深度分析 ({i+1}/{len(target_list)}): {ticker} ...")
                     
                     sector = target_df[target_df['商品'] == ticker]['產業'].iloc[0]
                     
-                    # 檢查是否今日已分析且存於快取
                     if ticker in history and history[ticker].get('date') == today_date:
                         curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
-                        # 記錄到全景數據中 (加入 dist 距離參數，讓 AI 能判斷是否在狙擊區)
                         aggregated_data += f"- 【{ticker}】 板塊:{sector} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | (已讀取快取)\n"
                     else:
-                        # 執行完整 API 抓取
                         curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
                         news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=2, y_limit=2)
                         news_text = "無重大新聞" if not news_pool else "\n".join([f"{j+1}. {text}" for j, text in enumerate(news_pool)])
                         
-                        # 🔥 火力全開：讓 AI 在背景生成最詳盡的個股報告並存入側邊欄
                         mini_prompt = f"""
                         # Role: 證據導向的華爾街 Swing Trading 分析師
                         - 標的：{ticker} | 實價：${curr_price:.2f} | 距SMA21：{dist:.2f}% | 板塊：{sector} | 日期：{today_date}
@@ -461,26 +455,36 @@ with tab3:
                         1. 偵察表格 (包含資金動能邏輯與評分)
                         2. 雙語消息與風險矩陣 (嚴格按 🚀 Tier 1 -> ⚡ Tier 2 -> ⚪ Tier 3 -> ⚠️ Risk 排序點評)
                         """
-                        try:
-                            mini_response = client.models.generate_content(model='gemini-2.5-flash', contents=mini_prompt)
-                            history[ticker] = {"date": today_date, "content": mini_response.text}
-                            save_history(history)
-                        except Exception as e:
-                            st.warning(f"⚠️ {ticker} AI 分析超時或受限，將僅記錄基礎數據。")
+                        
+                        # 🔥 終極重試機制 (Smart Auto-Retry)
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                mini_response = client.models.generate_content(model='gemini-2.5-flash', contents=mini_prompt)
+                                history[ticker] = {"date": today_date, "content": mini_response.text}
+                                save_history(history)
+                                break  # 成功寫入，跳出重試迴圈
+                            except Exception as e:
+                                error_msg = str(e)
+                                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                                    st.toast(f"🛑 {ticker} 觸發 API 限制，系統自動進入冷卻休眠 35 秒... (重試 {attempt+1}/{max_retries})")
+                                    time.sleep(35)  # 乖乖等 35 秒讓 Google 額度重置
+                                else:
+                                    st.warning(f"⚠️ {ticker} 發生其他錯誤，跳過分析。錯誤: {error_msg}")
+                                    break # 不是頻率限制的錯誤，直接放棄
                         
                         aggregated_data += f"- 【{ticker}】 板塊:{sector} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | 核心新聞:{news_text[:150]}...\n"
                         
-                        # 🛑 終極安全節流閥：強制暫停 10 秒
-                        time.sleep(10) 
+                        # 每隻股票基本暫停 8 秒，細水長流
+                        time.sleep(8) 
                         
                     progress_bar.progress((i + 1) / len(target_list))
                 
                 status_text.text("✅ 所有標的深度掃描完畢！正在統整宏觀與全景戰略報告...")
                 
-                # 2. 宏觀數據計算
+                # ... (下方生成宏觀報告的程式碼保持完全不變) ...
                 vix_latest = float(vix_data.iloc[-1]) if vix_data is not None else "未知"
                 
-                # 3. 發送終極戰略 Prompt 給 Gemini
                 macro_prompt = f"""
                 # Role: 頂級華爾街宏觀對沖基金經理人 (Alpha Focus - 全景戰略模式)
 
@@ -510,13 +514,22 @@ with tab3:
                 [基於你的數據庫知識，列出上述 Top Picks 名單中，未來兩週內可能有財報發布或重大風險事件的標的，提醒避開]
                 """
                 
-                try:
-                    macro_response = client.models.generate_content(model='gemini-2.5-flash', contents=macro_prompt)
-                    st.success("🎉 全景戰略報告生成完畢！")
-                    with st.container(border=True):
-                        st.markdown(macro_response.text)
-                except Exception as e:
-                    st.error(f"生成報告時發生錯誤: {e}")
+                # 最後一次終極重試機制 (確保辛辛苦苦掃描完 127 隻股票後，最後生成報告這一步絕對不翻車)
+                for attempt in range(3):
+                    try:
+                        macro_response = client.models.generate_content(model='gemini-2.5-flash', contents=macro_prompt)
+                        st.success("🎉 全景戰略報告生成完畢！")
+                        with st.container(border=True):
+                            st.markdown(macro_response.text)
+                        break
+                    except Exception as e:
+                        if "429" in str(e):
+                            st.toast("🛑 生成總報告時觸發限制，等待 40 秒後最終重試...")
+                            time.sleep(40)
+                        else:
+                            st.error(f"生成報告時發生錯誤: {e}")
+                            break
     else:
         st.info("👈 請先上傳 TradingView CSV 以啟動全景掃描模式。")
+
 
