@@ -420,7 +420,7 @@ with tab3:
         # 顯示掃描計畫
         batch_size = 10
         total_batches = (total_stocks // batch_size) + (1 if total_stocks % batch_size != 0 else 0)
-        est_minutes = (total_stocks * 12) // 60 + total_batches # 包含 1 分鐘休息
+        est_minutes = (total_stocks * 12) // 60 + total_batches # 包含休息時間
         
         st.info(f"📋 **掃描計畫確認**：\n- 總標的數：{total_stocks} 隻\n- 處理方式：分 {total_batches} 批次執行\n- API 重置：每批次後深度休眠 60 秒\n- 預計總耗時：約 {est_minutes} 分鐘")
         
@@ -441,7 +441,6 @@ with tab3:
                     if len(log_history) > 50: log_history.pop()
                     log_area.text_area("Log:", value="\n".join(log_history), height=350, disabled=True, label_visibility="collapsed")
 
-                # 🗝️ 核心：這個變數在所有批次之外，確保數據不斷積累
                 aggregated_data_list = [] 
                 today_date = datetime.now().strftime("%Y-%m-%d")
                 client = genai.Client(api_key=api_key)
@@ -475,26 +474,31 @@ with tab3:
                             news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=2, y_limit=2)
                             news_text = "無新聞" if not news_pool else " | ".join(news_pool[:3])
                             
-                            # 呼叫 Gemini (含自動重試)
                             mini_prompt = f"分析 {ticker} (價格:{curr_price}, RS:{rs_rating}, 距SMA21:{dist}%)。新聞:{news_text}。請生成詳細雙語報告並按 Tier 1-3 排序。"
                             
-                            try:
-                                mini_response = client.models.generate_content(model='gemini-2.5-flash', contents=mini_prompt)
-                                history[ticker] = {"date": today_date, "content": mini_response.text}
-                                save_history(history)
-                                update_log(f"✅ {ticker} 分析完畢並存入快取。")
-                            except Exception as e:
-                                if "429" in str(e):
-                                    update_log(f"🛑 {ticker} 觸發限流，強制休眠 35s...")
-                                    time.sleep(35)
-                                    # 重試一次
+                            # 🛡️ 裝甲級重試迴圈 (絕對防崩潰)
+                            max_retries = 2
+                            ai_success = False
+                            for attempt in range(max_retries):
+                                try:
                                     mini_response = client.models.generate_content(model='gemini-2.5-flash', contents=mini_prompt)
                                     history[ticker] = {"date": today_date, "content": mini_response.text}
                                     save_history(history)
-                                    update_log(f"✅ {ticker} 重試後分析成功。")
-                                else:
-                                    update_log(f"⚠️ {ticker} 跳過 AI 步驟。")
-
+                                    update_log(f"✅ {ticker} 分析完畢並存入快取。")
+                                    ai_success = True
+                                    break # 成功就跳出重試迴圈
+                                except Exception as e:
+                                    error_msg = str(e)
+                                    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                                        update_log(f"🛑 {ticker} 觸發限流，強制休眠 45s... (重試 {attempt+1}/{max_retries})")
+                                        time.sleep(45) # 增加到 45 秒確保額度恢復
+                                    else:
+                                        update_log(f"⚠️ {ticker} 非限流錯誤 (可能為安全過濾)。跳過 AI。")
+                                        break # 非 429 錯誤，重試也沒用，直接跳出
+                            
+                            if not ai_success:
+                                update_log(f"❌ {ticker} AI 分析最終失敗，僅保留基礎數據。")
+                                
                             info_str = f"【{ticker}】板塊:{sector} | 距SMA21:{dist:.2f}% | RS:{rs_rating:.0f} | 關鍵新聞摘要:{news_text[:100]}"
 
                         # 將數據存入「總清單」
@@ -531,17 +535,25 @@ with tab3:
                 5. 關鍵財報與風險提醒
                 """
                 
-                # 生成總結
-                try:
-                    macro_response = client.models.generate_content(model='gemini-2.5-flash', contents=macro_prompt)
-                    st.success("🎉 全景戰略報告已成功彙整所有股票數據生成！")
-                    update_log("🎉 終極報告生成完畢，任務圓滿完成！")
-                    with st.container(border=True):
-                        st.markdown(macro_response.text)
-                except Exception as e:
-                    st.error(f"總結報告生成失敗: {e}")
+                # 🛡️ 總結報告裝甲重試
+                for attempt in range(3):
+                    try:
+                        macro_response = client.models.generate_content(model='gemini-2.5-flash', contents=macro_prompt)
+                        st.success("🎉 全景戰略報告已成功彙整所有股票數據生成！")
+                        update_log("🎉 終極報告生成完畢，任務圓滿完成！")
+                        with st.container(border=True):
+                            st.markdown(macro_response.text)
+                        break
+                    except Exception as e:
+                        if "429" in str(e):
+                            update_log(f"🛑 總報告生成觸發限制，等待 45 秒後重試 ({attempt+1}/3)...")
+                            time.sleep(45)
+                        else:
+                            st.error(f"生成報告時發生錯誤: {e}")
+                            break
 
     else:
         st.info("👈 請上傳 TradingView CSV 以啟動全景模式。")
+
 
 
