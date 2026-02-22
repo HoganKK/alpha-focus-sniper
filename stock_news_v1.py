@@ -410,7 +410,7 @@ with tab3:
     st.write("系統將批次掃描您的完整名單，總結資金流向、篩選出 Top Picks，並生成機構級戰略指南。")
     
     if uploaded_file:
-        uploaded_file.seek(0)
+        uploaded_file.seek(0) # 強制把檔案指標歸零倒帶
         df = pd.read_csv(uploaded_file)
         df['SMA21_Dist_Num'] = (((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
         
@@ -420,15 +420,15 @@ with tab3:
         est_minutes = (len(target_df) * 15) // 60
         st.info(f"🎯 準備掃描目標：完整名單共 {len(target_df)} 隻股票。已啟動「終極防斷線重試機制」，遇到 API 限制會自動休眠再戰。預計需時 {est_minutes} 分鐘以上，請安心掛機等待。")
         
-if st.button("🚀 啟動全局深度掃描與生成戰略報告", type="primary"):
+        if st.button("🚀 啟動全局深度掃描與生成戰略報告", type="primary"):
             if not api_key or not fh_api_key:
                 st.error("請確保已輸入 Gemini 與 Finnhub API Key！")
             else:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                # 🚀 新增：摺疊的終端機 Log 視窗
-                with st.expander("💻 系統即時執行日誌 (Terminal Log)", expanded=False):
+                # 🚀 新增：摺疊的終端機 Log 視窗 (預設展開，方便你看)
+                with st.expander("💻 系統即時執行日誌 (Terminal Log)", expanded=True):
                     log_container = st.empty()
                     log_text = ""
                 
@@ -440,7 +440,11 @@ if st.button("🚀 啟動全局深度掃描與生成戰略報告", type="primary
                 target_list = target_df['商品'].tolist()
                 for i, ticker in enumerate(target_list):
                     status_text.text(f"⏳ 正在深度分析 ({i+1}/{len(target_list)}): {ticker} ...")
+                    
+                    # 避免 CSV 裡的產業欄位是空白的 (NaN)
                     sector = target_df[target_df['商品'] == ticker]['產業'].iloc[0]
+                    if pd.isna(sector):
+                        sector = "未知"
                     
                     if ticker in history and history[ticker].get('date') == today_date:
                         # 已經有快取了，快速運算
@@ -499,15 +503,17 @@ if st.button("🚀 啟動全局深度掃描與生成戰略報告", type="primary
                         
                         log_text += f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ {ticker} 流程結束，安全休眠 8 秒...\n\n"
                         log_container.code(log_text)
+                        
                         time.sleep(8) 
                         
                     progress_bar.progress((i + 1) / len(target_list))
                 
                 status_text.text("✅ 所有標的深度掃描完畢！正在統整宏觀與全景戰略報告...")
                 
-                # ... (下方生成宏觀報告的程式碼保持完全不變) ...
+                # 2. 宏觀數據計算
                 vix_latest = float(vix_data.iloc[-1]) if vix_data is not None else "未知"
                 
+                # 3. 發送終極戰略 Prompt 給 Gemini
                 macro_prompt = f"""
                 # Role: 頂級華爾街宏觀對沖基金經理人 (Alpha Focus - 全景戰略模式)
 
@@ -537,7 +543,7 @@ if st.button("🚀 啟動全局深度掃描與生成戰略報告", type="primary
                 [基於你的數據庫知識，列出上述 Top Picks 名單中，未來兩週內可能有財報發布或重大風險事件的標的，提醒避開]
                 """
                 
-                # 最後一次終極重試機制 (確保辛辛苦苦掃描完 127 隻股票後，最後生成報告這一步絕對不翻車)
+                # 最後一次終極重試機制
                 for attempt in range(3):
                     try:
                         macro_response = client.models.generate_content(model='gemini-2.5-flash', contents=macro_prompt)
