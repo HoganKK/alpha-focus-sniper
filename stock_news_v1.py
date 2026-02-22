@@ -410,15 +410,15 @@ with tab3:
     st.write("系統將批次掃描您的完整名單，總結資金流向、篩選出 Top Picks，並生成機構級戰略指南。")
     
     if uploaded_file:
-        uploaded_file.seek(0) # 強制把檔案指標歸零倒帶
+        uploaded_file.seek(0) 
         df = pd.read_csv(uploaded_file)
         df['SMA21_Dist_Num'] = (((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
         
         target_df = df 
+        total_stocks = len(target_df)
         
-        # 計算更寬裕的預估時間
-        est_minutes = (len(target_df) * 15) // 60
-        st.info(f"🎯 準備掃描目標：完整名單共 {len(target_df)} 隻股票。已啟動「終極防斷線重試機制」，遇到 API 限制會自動休眠再戰。預計需時 {est_minutes} 分鐘以上，請安心掛機等待。")
+        est_minutes = (total_stocks * 15) // 60 + (total_stocks // 10) * 1  # 包含批次休息時間
+        st.info(f"🎯 準備掃描目標：完整名單共 {total_stocks} 隻股票。已啟動「10檔批次處理機制」，每處理 10 檔將深度休眠 60 秒重置 API。預計需時 {est_minutes} 分鐘，請安心掛機。")
         
         if st.button("🚀 啟動全局深度掃描與生成戰略報告", type="primary"):
             if not api_key or not fh_api_key:
@@ -427,93 +427,100 @@ with tab3:
                 progress_bar = st.progress(0)
                 status_text = st.empty()
                 
-                # 🚀 新增：摺疊的終端機 Log 視窗 (預設展開，方便你看)
                 with st.expander("💻 系統即時執行日誌 (Terminal Log)", expanded=True):
-                    log_container = st.empty()
-                    log_text = ""
+                    log_area = st.empty()
+                    log_history = []
                 
+                def update_log(msg):
+                    """更新日誌並保持最新的在最上面，限制行數防崩潰"""
+                    time_str = datetime.now().strftime('%H:%M:%S')
+                    log_history.insert(0, f"[{time_str}] {msg}")
+                    if len(log_history) > 40: # 保留最近 40 行
+                        log_history.pop()
+                    log_area.text_area("執行日誌 (由新到舊):", value="\n".join(log_history), height=350, disabled=True, label_visibility="collapsed")
+
                 aggregated_data = ""
                 today_date = datetime.now().strftime("%Y-%m-%d")
-                
                 client = genai.Client(api_key=api_key)
                 
                 target_list = target_df['商品'].tolist()
-                for i, ticker in enumerate(target_list):
-                    status_text.text(f"⏳ 正在深度分析 ({i+1}/{len(target_list)}): {ticker} ...")
+                processed_count = 0
+                batch_size = 10  # 每 10 隻一批次
+                
+                # 📦 啟動批次處理迴圈
+                for batch_idx in range(0, total_stocks, batch_size):
+                    batch_tickers = target_list[batch_idx : batch_idx + batch_size]
+                    current_batch_num = (batch_idx // batch_size) + 1
+                    total_batches = (total_stocks // batch_size) + (1 if total_stocks % batch_size != 0 else 0)
                     
-                    # 避免 CSV 裡的產業欄位是空白的 (NaN)
-                    sector = target_df[target_df['商品'] == ticker]['產業'].iloc[0]
-                    if pd.isna(sector):
-                        sector = "未知"
+                    update_log(f"📦 ====== 開始處理第 {current_batch_num}/{total_batches} 批次 (共 {len(batch_tickers)} 隻) ======")
                     
-                    if ticker in history and history[ticker].get('date') == today_date:
-                        # 已經有快取了，快速運算
-                        log_text += f"[{datetime.now().strftime('%H:%M:%S')}] ⚡ {ticker} 偵測到今日快取，極速讀取中...\n"
-                        log_container.code(log_text)
+                    for ticker in batch_tickers:
+                        processed_count += 1
+                        status_text.text(f"⏳ 正在深度分析 ({processed_count}/{total_stocks}): {ticker} ...")
                         
-                        curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
-                        aggregated_data += f"- 【{ticker}】 板塊:{sector} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | (已讀取快取)\n"
-                    else:
-                        # 全新分析，紀錄詳細 Log
-                        log_text += f"[{datetime.now().strftime('%H:%M:%S')}] 🔍 {ticker} 開始全新分析，正在抓取技術面與新聞...\n"
-                        log_container.code(log_text)
+                        sector = target_df[target_df['商品'] == ticker]['產業'].iloc[0]
+                        if pd.isna(sector):
+                            sector = "未知"
                         
-                        curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
-                        news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=2, y_limit=2)
-                        
-                        news_count = len(news_pool)
-                        log_text += f"[{datetime.now().strftime('%H:%M:%S')}] 📰 {ticker} 新聞抓取完畢，共找到 {news_count} 篇，準備提交給 Gemini...\n"
-                        log_container.code(log_text)
-                        
-                        news_text = "無重大新聞" if not news_pool else "\n".join([f"{j+1}. {text}" for j, text in enumerate(news_pool)])
-                        
-                        mini_prompt = f"""
-                        # Role: 證據導向的華爾街 Swing Trading 分析師
-                        - 標的：{ticker} | 實價：${curr_price:.2f} | 距SMA21：{dist:.2f}% | 板塊：{sector} | 日期：{today_date}
-                        - 📊 參數：RSI(14): {rsi:.0f} | IBD RS Rating: {rs_rating:.0f}
-                        - 綜合新聞：\n{news_text}
-                        
-                        請輸出詳細的偵察報告，包含：
-                        1. 偵察表格 (包含資金動能邏輯與評分)
-                        2. 雙語消息與風險矩陣 (嚴格按 🚀 Tier 1 -> ⚡ Tier 2 -> ⚪ Tier 3 -> ⚠️ Risk 排序點評)
-                        """
-                        
-                        max_retries = 3
-                        for attempt in range(max_retries):
-                            try:
-                                mini_response = client.models.generate_content(model='gemini-2.5-flash', contents=mini_prompt)
-                                history[ticker] = {"date": today_date, "content": mini_response.text}
-                                save_history(history)
-                                log_text += f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {ticker} Gemini 分析成功，已寫入雲端側邊欄。\n"
-                                log_container.code(log_text)
-                                break
-                            except Exception as e:
-                                error_msg = str(e)
-                                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                                    log_text += f"[{datetime.now().strftime('%H:%M:%S')}] 🛑 {ticker} 觸發 API 限制，等待 35 秒後重試 ({attempt+1}/{max_retries})...\n"
-                                    log_container.code(log_text)
-                                    st.toast(f"🛑 {ticker} 觸發 API 限制，系統自動進入冷卻休眠 35 秒...")
-                                    time.sleep(35)
-                                else:
-                                    log_text += f"[{datetime.now().strftime('%H:%M:%S')}] ⚠️ {ticker} 未知錯誤，跳過 AI 寫作環節。\n"
-                                    log_container.code(log_text)
+                        if ticker in history and history[ticker].get('date') == today_date:
+                            update_log(f"⚡ {ticker} 偵測到今日快取，極速讀取中...")
+                            curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
+                            aggregated_data += f"- 【{ticker}】 板塊:{sector} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | (已讀取快取)\n"
+                        else:
+                            update_log(f"🔍 {ticker} 開始全新分析，正在抓取技術面與新聞...")
+                            
+                            curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
+                            news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=2, y_limit=2)
+                            
+                            update_log(f"📰 {ticker} 新聞抓取完畢，準備提交給 AI...")
+                            news_text = "無重大新聞" if not news_pool else "\n".join([f"{j+1}. {text}" for j, text in enumerate(news_pool)])
+                            
+                            mini_prompt = f"""
+                            # Role: 證據導向的華爾街 Swing Trading 分析師
+                            - 標的：{ticker} | 實價：${curr_price:.2f} | 距SMA21：{dist:.2f}% | 板塊：{sector} | 日期：{today_date}
+                            - 📊 參數：RSI(14): {rsi:.0f} | IBD RS Rating: {rs_rating:.0f}
+                            - 綜合新聞：\n{news_text}
+                            
+                            請輸出詳細的偵察報告，包含：
+                            1. 偵察表格 (包含資金動能邏輯與評分)
+                            2. 雙語消息與風險矩陣 (嚴格按 🚀 Tier 1 -> ⚡ Tier 2 -> ⚪ Tier 3 -> ⚠️ Risk 排序點評)
+                            """
+                            
+                            max_retries = 3
+                            for attempt in range(max_retries):
+                                try:
+                                    mini_response = client.models.generate_content(model='gemini-2.5-flash', contents=mini_prompt)
+                                    history[ticker] = {"date": today_date, "content": mini_response.text}
+                                    save_history(history)
+                                    update_log(f"✅ {ticker} AI 分析成功，已寫入雲端。")
                                     break
-                        
-                        aggregated_data += f"- 【{ticker}】 板塊:{sector} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | 核心新聞:{news_text[:150]}...\n"
-                        
-                        log_text += f"[{datetime.now().strftime('%H:%M:%S')}] ⏱️ {ticker} 流程結束，安全休眠 8 秒...\n\n"
-                        log_container.code(log_text)
-                        
-                        time.sleep(8) 
-                        
-                    progress_bar.progress((i + 1) / len(target_list))
+                                except Exception as e:
+                                    error_msg = str(e)
+                                    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                                        update_log(f"🛑 {ticker} 觸發限制，休眠 35 秒後重試 ({attempt+1}/{max_retries})...")
+                                        time.sleep(35)
+                                    else:
+                                        update_log(f"⚠️ {ticker} 未知錯誤，跳過 AI 環節。")
+                                        break
+                            
+                            aggregated_data += f"- 【{ticker}】 板塊:{sector} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | 核心新聞:{news_text[:150]}...\n"
+                            
+                            update_log(f"⏱️ {ticker} 結束，常規休眠 8 秒...")
+                            time.sleep(8) 
+                            
+                        progress_bar.progress(processed_count / total_stocks)
+                    
+                    # 🛑 【核心升級】每批次結束後，進行深度休眠重置 API 額度
+                    if batch_idx + batch_size < total_stocks:
+                        update_log(f"🛌 第 {current_batch_num} 批次完成！系統進入深度休眠 60 秒，重置 API 額度...")
+                        time.sleep(60)
                 
                 status_text.text("✅ 所有標的深度掃描完畢！正在統整宏觀與全景戰略報告...")
+                update_log("🚀 所有批次處理完畢！準備生成最終宏觀戰略報告...")
                 
-                # 2. 宏觀數據計算
                 vix_latest = float(vix_data.iloc[-1]) if vix_data is not None else "未知"
                 
-                # 3. 發送終極戰略 Prompt 給 Gemini
                 macro_prompt = f"""
                 # Role: 頂級華爾街宏觀對沖基金經理人 (Alpha Focus - 全景戰略模式)
 
@@ -543,17 +550,17 @@ with tab3:
                 [基於你的數據庫知識，列出上述 Top Picks 名單中，未來兩週內可能有財報發布或重大風險事件的標的，提醒避開]
                 """
                 
-                # 最後一次終極重試機制
                 for attempt in range(3):
                     try:
                         macro_response = client.models.generate_content(model='gemini-2.5-flash', contents=macro_prompt)
                         st.success("🎉 全景戰略報告生成完畢！")
+                        update_log("🎉 任務全部完成！")
                         with st.container(border=True):
                             st.markdown(macro_response.text)
                         break
                     except Exception as e:
                         if "429" in str(e):
-                            st.toast("🛑 生成總報告時觸發限制，等待 40 秒後最終重試...")
+                            update_log("🛑 總報告生成觸發限制，等待 40 秒後重試...")
                             time.sleep(40)
                         else:
                             st.error(f"生成報告時發生錯誤: {e}")
