@@ -410,8 +410,11 @@ with tab3:
     st.write("系統將批次掃描您的名單，總結資金流向、篩選出 Top Picks，並生成機構級戰略指南。")
     
     if uploaded_file:
+        uploaded_file.seek(0) # 👈👈👈 加上這行：強制把檔案指標歸零倒帶
         df = pd.read_csv(uploaded_file)
         df['SMA21_Dist_Num'] = (((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
+        
+        # ... 下面的程式碼保持不變 ...
         
         # 預設掃描 0-5% 狙擊區，以節省 API
         sniper_df = df[(df['SMA21_Dist_Num'] >= 0) & (df['SMA21_Dist_Num'] <= 5)]
@@ -504,3 +507,4 @@ with tab3:
                     st.error(f"生成報告時發生錯誤: {e}")
     else:
         st.info("👈 請先上傳 TradingView CSV 以啟動全景掃描模式。")
+
