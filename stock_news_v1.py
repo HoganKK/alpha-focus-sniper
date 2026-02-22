@@ -29,7 +29,6 @@ history = load_history()
 # --- 核心引擎：Finnhub 基礎抓取 ---
 def get_finnhub_news(ticker, api_key, limit=4):
     ticker_fh = ticker
-    # 處理富途港股代碼邏輯 (如 09988 -> 9988.HK)
     if str(ticker).isdigit() and len(str(ticker)) == 5:
         ticker_fh = f"{str(ticker)[1:]}.HK"
         
@@ -84,7 +83,7 @@ def get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=3, y_limit=2)
         
     return news_pool
 
-# --- 動態技術數據計算 (給守護者模式用) ---
+# --- 動態技術數據計算 ---
 def get_dynamic_stats(ticker):
     yf_ticker = ticker
     if str(ticker).isdigit() and len(str(ticker)) == 5:
@@ -117,14 +116,14 @@ if "stock_selector" not in st.session_state:
 
 # ================= 網頁主體 =================
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 三引擎量化交易系統 v6.1")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v6.2")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
 
-# 自動載入 API Key，若 Streamlit Secrets 有設定則優先讀取，否則使用預設值
-default_gemini = st.secrets.get("GEMINI_API_KEY", "AIzaSyCBGNM3YT7ydNha9PMfgUktiAHXWeYDZvk")
-default_finnhub = st.secrets.get("FINNHUB_API_KEY", "d6dgqnhr01qm89pjf6fg")
+# 【安全升級】從 Streamlit Secrets 安全讀取，如果沒設定就返回空字串。GitHub 代碼絕對乾淨！
+default_gemini = st.secrets.get("GEMINI_API_KEY", "")
+default_finnhub = st.secrets.get("FINNHUB_API_KEY", "")
 
 api_key = st.sidebar.text_input("Gemini API Key", value=default_gemini, type="password")
 fh_api_key = st.sidebar.text_input("Finnhub API Key", value=default_finnhub, type="password")
@@ -153,7 +152,6 @@ with tab1:
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
         
-        # 精確處理浮點數，解決數量對不上的 Bug
         df['SMA21_Dist_Num'] = (((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
         df['縮量狀態'] = df['成交量 1天'] < df['平均成交量 10天']
         
@@ -227,11 +225,10 @@ with tab1:
 
             if analyze_button:
                 if not api_key or not fh_api_key:
-                    st.error("請確保已輸入 Gemini 與 Finnhub API Key！")
+                    st.error("請確保已在左側邊欄或 Streamlit Secrets 設定 API Key！")
                 else:
                     with st.spinner('正在從 Finnhub、Google 及 Yahoo 聚合情報並由 AI 審計中...'):
                         try:
-                            # 啟動三引擎收集新聞
                             news_pool = get_triple_engine_news(selected_stock, fh_api_key, fh_limit=4, g_limit=3, y_limit=2)
                             
                             if not news_pool:
@@ -289,7 +286,7 @@ with tab2:
         
         if st.button("🛡️ 執行持倉組合審計 (Portfolio Audit)", type="primary"):
             if not api_key or not fh_api_key:
-                st.error("請確保已輸入 Gemini 與 Finnhub API Key！")
+                st.error("請確保已在左側邊欄或 Streamlit Secrets 設定 API Key！")
             else:
                 with st.spinner('正在獲取最新技術指標與三引擎新聞，進行持倉審計...'):
                     try:
@@ -303,7 +300,6 @@ with tab2:
                             
                             curr_price, dist, rsi = get_dynamic_stats(ticker)
                             
-                            # 守護者模式的三引擎抓取 (限制每股只抓少量最核心的新聞，避免 AI 負載過重)
                             news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=2, g_limit=1, y_limit=1)
                             n_text = "無重大新聞" if not news_pool else " | ".join(news_pool)
                             
