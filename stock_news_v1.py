@@ -24,6 +24,12 @@ def save_history(history_data):
         json.dump(history_data, f, ensure_ascii=False, indent=4)
 
 history = load_history()
+
+# --- 記憶狀態 (Session State) 初始化 ---
+if "stock_selector" not in st.session_state:
+    st.session_state.stock_selector = None
+if "sniper_checkbox" not in st.session_state:
+    st.session_state.sniper_checkbox = False
 # ------------------------
 
 st.set_page_config(layout="wide", page_title="Alpha Focus Sniper Dashboard")
@@ -44,10 +50,15 @@ st.sidebar.info("""
 uploaded_file = st.sidebar.file_uploader("上傳 TradingView CSV", type="csv")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📚 雲端歷史分析紀錄")
+st.sidebar.markdown("### 📚 雲端歷史分析紀錄 (點擊跳轉)")
+
+# 將歷史紀錄轉為按鈕，點擊後觸發跳轉邏輯
 if history:
     for ticker, data in history.items():
-        st.sidebar.write(f"✅ **{ticker}** *(分析於 {data['date']})*")
+        if st.sidebar.button(f"🔍 查看 {ticker} (分析於 {data['date']})", key=f"hist_{ticker}"):
+            # 點擊後，強制將下拉選單設為該股票，並取消 0-5% 的篩選限制
+            st.session_state.stock_selector = ticker
+            st.session_state.sniper_checkbox = False 
 else:
     st.sidebar.caption("目前尚無分析紀錄。")
 
@@ -61,27 +72,33 @@ if uploaded_file:
     
     st.subheader("📊 強勢股篩選清單")
     
-    # 預先計算 0-5% 狙擊區的標的數量
     sniper_df = df[(df['SMA21_Dist'] >= 0) & (df['SMA21_Dist'] <= 5)]
     sniper_count = len(sniper_df)
     
-    # 修改 1, 2, 4: 取消預設勾選，改為 0-5%，並動態顯示數量
-    only_sniper = st.checkbox(f"只顯示狙擊區標的 (0-5% 距離) - 🎯 目前符合：{sniper_count} 隻", value=False)
+    # 這裡綁定 session_state.sniper_checkbox
+    only_sniper = st.checkbox(f"只顯示狙擊區標的 (0-5% 距離) - 🎯 目前符合：{sniper_count} 隻", key="sniper_checkbox")
     
     if only_sniper:
         display_df = sniper_df
     else:
         display_df = df
 
+    # 加入 hide_index=True 隱藏 0~126 的編號，讓表格更乾淨
     st.dataframe(display_df[['商品', '價格', 'SMA21_Dist', '縮量狀態', '相對強弱指標 (14) 1天', '價格變化 % 1週', '產業']], 
-                 use_container_width=True)
+                 use_container_width=True, hide_index=True)
 
     st.markdown("---")
     st.write("### 🔬 標的深度診斷模組")
     
-    # 修改 3: 這裡的下拉選單現在會與上面的 checkbox 連動 (只讀取 display_df)
-    if not display_df.empty:
-        selected_stock = st.selectbox("請選擇要進行 K線圖與 AI 深度分析的標的：", display_df['商品'].tolist())
+    options = display_df['商品'].tolist()
+    
+    # 防呆機制：如果目前下拉選單選中的股票因為打勾篩選而不見了，自動重置為名單中的第一個
+    if options and (st.session_state.stock_selector not in options):
+        st.session_state.stock_selector = options[0]
+
+    if options:
+        # 下拉選單綁定 session_state.stock_selector
+        selected_stock = st.selectbox("請選擇要進行 K線圖與 AI 深度分析的標的：", options, key="stock_selector")
         
         stock_data = df[df['商品'] == selected_stock].iloc[0]
         real_price = stock_data['價格']
@@ -112,7 +129,6 @@ if uploaded_file:
             colors = ['green' if c >= o else 'red' for c, o in zip(close_p, open_p)]
             fig.add_trace(go.Bar(x=hist_data.index, y=volume_p, marker_color=colors, name='成交量'), row=2, col=1)
             
-            # 隱藏週末斷層，讓 K 線圖連續
             fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
             fig.update_layout(xaxis_rangeslider_visible=False, height=600, showlegend=False, margin=dict(t=10, b=10))
             st.plotly_chart(fig, use_container_width=True)
@@ -123,18 +139,14 @@ if uploaded_file:
         st.markdown("---")
         st.write(f"#### 🧠 Alpha Focus 偵察報告")
         
-        # === 歷史紀錄判斷邏輯 ===
         if selected_stock in history:
             st.info(f"📂 目前顯示的是雲端歷史紀錄 (最後分析日期: {history[selected_stock]['date']})。閱讀歷史紀錄不消耗 API。")
             with st.container(border=True):
                 st.markdown(history[selected_stock]['content'])
             
-            # 提供重新掃描按鈕
             analyze_button = st.button("🔄 重新深度掃描 (更新最新新聞並消耗 API)")
-            is_history = True
         else:
             analyze_button = st.button("🚀 啟動數據審計協議 (Data Integrity Protocol)", type="primary")
-            is_history = False
 
         if analyze_button:
             if not api_key:
@@ -154,7 +166,6 @@ if uploaded_file:
                         
                         client = genai.Client(api_key=api_key)
                         
-                        # 修改 5: 強制 AI 將新聞按照 Tier 級別排序
                         prompt = f"""
                         # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 偵察模式)
                         
@@ -195,7 +206,6 @@ if uploaded_file:
                         
                         response = client.models.generate_content(model='gemini-2.5-flash', contents=prompt)
                         
-                        # 儲存到歷史紀錄
                         history[selected_stock] = {
                             "date": today_date,
                             "content": response.text
