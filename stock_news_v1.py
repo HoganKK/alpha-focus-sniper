@@ -117,8 +117,9 @@ st.title("🦅 Alpha Focus 三引擎量化交易系統 v6.0")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
-api_key = st.sidebar.text_input("Gemini API Key", type="password")
-fh_api_key = st.sidebar.text_input("Finnhub API Key", value="d6dgqnhr01qm89pjf6fg", type="password")
+# 系統會優先嘗試從雲端機密讀取，如果沒有才顯示空白框讓你輸入
+default_gemini_key = st.secrets.get("GEMINI_API_KEY", "")
+api_key = st.sidebar.text_input("Gemini API Key", value=default_gemini_key, type="password")
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📂 數據庫上傳區")
@@ -335,3 +336,4 @@ with tab2:
                         st.error(f"分析時發生錯誤: {e}")
     else:
         st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
+
