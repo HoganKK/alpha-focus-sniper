@@ -275,6 +275,9 @@ with tab1:
 # ---------------------------------------------------------
 # TAB 2: 守護者模式 (Guardian Mode)
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# TAB 2: 守護者模式 (Guardian Mode)
+# ---------------------------------------------------------
 with tab2:
     st.subheader("🛡️ 守護者模式：富途持倉健檢與動態止損")
     if futu_file:
@@ -288,7 +291,7 @@ with tab2:
             if not api_key or not fh_api_key:
                 st.error("請確保已在左側邊欄或 Streamlit Secrets 設定 API Key！")
             else:
-                with st.spinner('正在獲取最新技術指標與三引擎新聞，進行持倉審計...'):
+                with st.spinner('正在獲取最新技術指標與三引擎新聞，進行深度持倉審計...'):
                     try:
                         portfolio_data = ""
                         today_date = datetime.now().strftime("%Y-%m-%d")
@@ -300,34 +303,53 @@ with tab2:
                             
                             curr_price, dist, rsi = get_dynamic_stats(ticker)
                             
-                            news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=2, g_limit=1, y_limit=1)
-                            n_text = "無重大新聞" if not news_pool else " | ".join(news_pool)
+                            # 稍微放寬新聞抓取量，以提供足夠的分析素材 (共 7 條)
+                            news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=2, y_limit=2)
                             
-                            portfolio_data += f"【{ticker}】券商成本:${cost_price} | 目前盈虧:{profit_pct} | 實時現價:${curr_price:.2f} | 距SMA21:{dist:.2f}% | RSI:{rsi:.0f} | 核心新聞: {n_text}\n"
+                            if not news_pool:
+                                n_text = "過去 14 天內無重大新聞。"
+                            else:
+                                n_text = "\n".join([f"{i+1}. {text}" for i, text in enumerate(news_pool)])
+                            
+                            portfolio_data += f"\n====================\n【{ticker}】\n- 券商成本: ${cost_price} | 目前盈虧: {profit_pct}\n- 實時現價: ${curr_price:.2f} | 距SMA21: {dist:.2f}% | RSI: {rsi:.0f}\n- 綜合新聞流:\n{n_text}\n"
 
                         client = genai.Client(api_key=api_key)
+                        
+                        # 全新排版的守護者 Prompt
                         guardian_prompt = f"""
                         # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 守護者模式)
                         
                         ## 0. 數據審計協議 (Data Integrity Protocol 3.0)
-                        以下是我的真實持倉數據，包含三引擎新聞，請根據這些數據給我具體建議：
+                        以下是我的真實持倉數據，包含三引擎新聞，請根據這些數據給我深度建議：
                         {portfolio_data}
                         基準日：{today_date}
                         
-                        ## 1. 核心任務：守護者邏輯
-                        判斷趨勢健康度，並給出 Hold(續抱)、Trim(減倉)、Sell(清倉) 或 Add(加倉) 的決策。
+                        ## 1. 輸出格式要求 (請嚴格遵守以下 Markdown 結構)
                         
-                        ## 2. 輸出格式 (嚴格使用此 Markdown 格式)
                         `[數據源: 三引擎 API/Futu | 審計基準日: {today_date} | 美東時間: 盤後]`
                         
-                        ### 持倉個股審計表
-                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 趨勢健康度 (RSI與量價) | 消息與風險矩陣 (綜合評估) | 決策建議 | 守護策略 (具體止損位) |
+                        ### 📊 1. 持倉速覽總表 (Overview)
+                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 目前盈虧 | 趨勢健康度 (RSI與量價) | 決策建議 | 守護策略 (具體止損/止盈位) |
                         | :--- | :--- | :--- | :--- | :--- | :--- |
-                        (請為我選擇的每一檔股票生成一行分析)
+                        (請為我選擇的每一檔股票生成一行總結)
                         
-                        ### 持倉組合總結 (Portfolio Playbook)
-                        1. **組合風險警告**：是否有過度曝險的狀況？
-                        2. **急迫行動清單**：列出必須在今日內做出決策的股票（例如破位或虧損擴大）。
+                        ---
+                        ### 🔬 2. 個股深度消息與風險矩陣 (Deep Dive)
+                        (請為上述每一檔持倉股票，單獨列出新聞的 Tier 評級與雙語點評。必須嚴格按照 1. 🚀 Tier 1 -> 2. ⚡ Tier 2 -> 3. ⚪ Tier 3 -> 4. ⚠️ Risk 排序)
+                        
+                        (針對每一檔持倉，請使用以下格式：)
+                        #### 📌 [股票代碼] 消息面剖析
+                        - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
+                          - **中文翻譯**：...
+                          - **守護者點評**：[這則消息對我們目前的持倉有什麼具體影響？利多是否兌現？利空是否致命？]
+                        - ⚠️ **[Risk]** (Original English Title Here) [標註新聞來源]
+                          - **中文翻譯**：...
+                          - **守護者點評**：...
+                        
+                        ---
+                        ### 📋 3. 持倉組合總結 (Portfolio Playbook)
+                        1. **組合風險警告**：是否有過度曝險的狀況？資金分配是否合理？
+                        2. **急迫行動清單**：列出必須在今日內做出決策的股票（例如破位、虧損擴大、或利多出盡需獲利了結）。
                         3. **動態止損指南**：根據當前大盤環境，建議如何調整整體的移動止盈策略。
                         """
                         
@@ -340,3 +362,4 @@ with tab2:
                         st.error(f"分析時發生錯誤: {e}")
     else:
         st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
+
