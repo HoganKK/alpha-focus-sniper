@@ -10,6 +10,7 @@ import urllib.parse
 from datetime import datetime, timedelta
 import json
 import os
+import time
 
 # --- 歷史紀錄快取系統 ---
 HISTORY_FILE = "alpha_focus_history.json"
@@ -53,147 +54,93 @@ def get_finnhub_news(ticker, api_key, limit=4):
 # --- 🌟 超級引擎：三源新聞聚合器 ---
 def get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=3, y_limit=2):
     news_pool = []
-    
-    # 1. Finnhub 專業新聞
     fh_news = get_finnhub_news(ticker, fh_api_key, limit=fh_limit)
-    for n in fh_news:
-        news_pool.append(f"[Finnhub 機構] {n}")
+    for n in fh_news: news_pool.append(f"[Finnhub 機構] {n}")
         
-    # 2. Google News 廣泛搜尋
     try:
         query = urllib.parse.quote(f"{ticker} stock news")
         feed = feedparser.parse(f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en")
-        for entry in feed.entries[:g_limit]:
-            news_pool.append(f"[Google 財經] {entry.title}")
-    except:
-        pass
+        for entry in feed.entries[:g_limit]: news_pool.append(f"[Google 財經] {entry.title}")
+    except: pass
         
-    # 3. Yahoo Finance 實時快訊
     try:
-        yf_ticker = ticker
-        if str(ticker).isdigit() and len(str(ticker)) == 5:
-            yf_ticker = f"{str(ticker)[1:]}.HK"
+        yf_ticker = ticker if not (str(ticker).isdigit() and len(str(ticker)) == 5) else f"{str(ticker)[1:]}.HK"
         y_info = yf.Ticker(yf_ticker)
         for n in y_info.news[:y_limit]:
             title = n.get('title') or n.get('headline') or ''
-            if title:
-                news_pool.append(f"[Yahoo 快訊] {title}")
-    except:
-        pass
+            if title: news_pool.append(f"[Yahoo 快訊] {title}")
+    except: pass
         
     return news_pool
 
-# --- IBD RS Rating 計算邏輯 (移植自 TradingView Pine Script) ---
+# --- IBD RS Rating 計算邏輯 ---
 @st.cache_data(ttl=3600)
-def get_spy_benchmark():
-    """快取大盤數據以節省下載時間"""
+def get_macro_benchmark():
+    """快取大盤 SPY 與 VIX 數據"""
     spy = yf.download("SPY", period="1y", interval="1d", progress=False)
-    if not spy.empty:
-        close = spy['Close'].squeeze()
-        if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
-        return close
-    return None
+    vix = yf.download("^VIX", period="1mo", interval="1d", progress=False)
+    
+    spy_close = spy['Close'].squeeze() if not spy.empty else None
+    if isinstance(spy_close, pd.DataFrame): spy_close = spy_close.iloc[:, 0]
+    
+    vix_close = vix['Close'].squeeze() if not vix.empty else None
+    if isinstance(vix_close, pd.DataFrame): vix_close = vix_close.iloc[:, 0]
+    
+    return spy_close, vix_close
 
 def calculate_rs_rating(stock_close, spy_close):
-    """計算 IBD 風格的 1-99 相對強度評級"""
-    if stock_close is None or spy_close is None or len(stock_close) < 10 or len(spy_close) < 10:
-        return 50  # 數據不足時返回中性 50
+    if stock_close is None or spy_close is None or len(stock_close) < 10 or len(spy_close) < 10: return 50
+    n63, n126, n189, n252 = min(63, len(stock_close)-1, len(spy_close)-1), min(126, len(stock_close)-1, len(spy_close)-1), min(189, len(stock_close)-1, len(spy_close)-1), min(252, len(stock_close)-1, len(spy_close)-1)
 
-    # 對齊 TradingView 計算週期 (63, 126, 189, 252)
-    n63 = min(63, len(stock_close)-1, len(spy_close)-1)
-    n126 = min(126, len(stock_close)-1, len(spy_close)-1)
-    n189 = min(189, len(stock_close)-1, len(spy_close)-1)
-    n252 = min(252, len(stock_close)-1, len(spy_close)-1)
-
-    # 標的季度表現
-    perf_T63 = stock_close.iloc[-1] / stock_close.iloc[-1 - n63]
-    perf_T126 = stock_close.iloc[-1] / stock_close.iloc[-1 - n126]
-    perf_T189 = stock_close.iloc[-1] / stock_close.iloc[-1 - n189]
-    perf_T252 = stock_close.iloc[-1] / stock_close.iloc[-1 - n252]
-
-    # SPY大盤季度表現
-    perf_S63 = spy_close.iloc[-1] / spy_close.iloc[-1 - n63]
-    perf_S126 = spy_close.iloc[-1] / spy_close.iloc[-1 - n126]
-    perf_S189 = spy_close.iloc[-1] / spy_close.iloc[-1 - n189]
-    perf_S252 = spy_close.iloc[-1] / spy_close.iloc[-1 - n252]
-
-    # 加權得分 (近一季權重加倍)
-    rs_stock = 0.4 * perf_T63 + 0.2 * perf_T126 + 0.2 * perf_T189 + 0.2 * perf_T252
-    rs_ref = 0.4 * perf_S63 + 0.2 * perf_S126 + 0.2 * perf_S189 + 0.2 * perf_S252
+    rs_stock = 0.4 * (stock_close.iloc[-1] / stock_close.iloc[-1 - n63]) + 0.2 * (stock_close.iloc[-1] / stock_close.iloc[-1 - n126]) + 0.2 * (stock_close.iloc[-1] / stock_close.iloc[-1 - n189]) + 0.2 * (stock_close.iloc[-1] / stock_close.iloc[-1 - n252])
+    rs_ref = 0.4 * (spy_close.iloc[-1] / spy_close.iloc[-1 - n63]) + 0.2 * (spy_close.iloc[-1] / spy_close.iloc[-1 - n126]) + 0.2 * (spy_close.iloc[-1] / spy_close.iloc[-1 - n189]) + 0.2 * (spy_close.iloc[-1] / spy_close.iloc[-1 - n252])
 
     if rs_ref == 0: return 50
-    totalRsScore = (rs_stock / rs_ref) * 100
-
-    # 逼近分位數的常數
+    score = (rs_stock / rs_ref) * 100
     first, scnd, thrd, frth, ffth, sxth, svth = 195.93, 117.11, 99.04, 91.66, 80.96, 53.64, 24.86
 
-    def f_attributePercentile(score, tallerPerf, smallerPerf, rangeUp, rangeDn, weight):
-        sum_val = score + (score - smallerPerf) * weight
-        if sum_val > tallerPerf - 1: sum_val = tallerPerf - 1
-        k1 = smallerPerf / rangeDn
-        k2 = (tallerPerf - 1) / rangeUp
-        k3 = (k1 - k2) / (tallerPerf - 1 - smallerPerf) if (tallerPerf - 1 - smallerPerf) != 0 else 0
-        denom = (k1 - k3 * (score - smallerPerf))
-        if denom == 0: return rangeDn
-        RsRating = sum_val / denom
-        if RsRating > rangeUp: RsRating = rangeUp
-        if RsRating < rangeDn: RsRating = rangeDn
-        return RsRating
+    def f_att(s, tP, sP, rU, rD, w):
+        sum_val = min(s + (s - sP) * w, tP - 1)
+        denom = (sP / rD) - (((sP / rD) - ((tP - 1) / rU)) / (tP - 1 - sP) if (tP - 1 - sP) != 0 else 0) * (s - sP)
+        return max(min(sum_val / denom if denom != 0 else rD, rU), rD)
 
-    if totalRsScore >= first: return 99
-    if totalRsScore <= svth: return 1
-
-    if scnd <= totalRsScore < first: return f_attributePercentile(totalRsScore, first, scnd, 98, 90, 0.33)
-    elif thrd <= totalRsScore < scnd: return f_attributePercentile(totalRsScore, scnd, thrd, 89, 70, 2.1)
-    elif frth <= totalRsScore < thrd: return f_attributePercentile(totalRsScore, thrd, frth, 69, 50, 0)
-    elif ffth <= totalRsScore < frth: return f_attributePercentile(totalRsScore, frth, ffth, 49, 30, 0)
-    elif sxth <= totalRsScore < ffth: return f_attributePercentile(totalRsScore, ffth, sxth, 29, 10, 0)
-    elif svth <= totalRsScore < sxth: return f_attributePercentile(totalRsScore, sxth, svth, 9, 2, 0)
-
+    if score >= first: return 99
+    if score <= svth: return 1
+    if scnd <= score < first: return f_att(score, first, scnd, 98, 90, 0.33)
+    elif thrd <= score < scnd: return f_att(score, scnd, thrd, 89, 70, 2.1)
+    elif frth <= score < thrd: return f_att(score, thrd, frth, 69, 50, 0)
+    elif ffth <= score < frth: return f_att(score, frth, ffth, 49, 30, 0)
+    elif sxth <= score < ffth: return f_att(score, ffth, sxth, 29, 10, 0)
+    elif svth <= score < sxth: return f_att(score, sxth, svth, 9, 2, 0)
     return 50
 
-# --- 動態技術數據計算 ---
 def get_dynamic_stats(ticker, spy_close):
-    yf_ticker = ticker
-    if str(ticker).isdigit() and len(str(ticker)) == 5:
-        yf_ticker = f"{str(ticker)[1:]}.HK"
-        
-    # 改為抓取一年期資料以配合 RS Rating 運算
+    yf_ticker = ticker if not (str(ticker).isdigit() and len(str(ticker)) == 5) else f"{str(ticker)[1:]}.HK"
     df = yf.download(yf_ticker, period="1y", interval="1d", progress=False)
-    if df.empty:
-        return 0, 0, 0, 50
-    
+    if df.empty: return 0, 0, 0, 50
     close = df['Close'].squeeze()
-    if isinstance(close, pd.DataFrame):
-         close = close.iloc[:, 0]
-         
+    if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
+    
     current_price = float(close.iloc[-1])
     sma21 = float(close.rolling(21).mean().iloc[-1])
     dist = ((current_price - sma21) / sma21) * 100
     
     delta = close.diff()
-    up = delta.clip(lower=0)
-    down = -1 * delta.clip(upper=0)
-    ema_up = up.ewm(com=13, adjust=False).mean()
-    ema_down = down.ewm(com=13, adjust=False).mean()
-    rs = ema_up / ema_down
+    up, down = delta.clip(lower=0), -1 * delta.clip(upper=0)
+    rs = up.ewm(com=13, adjust=False).mean() / down.ewm(com=13, adjust=False).mean()
     rsi = 100 - (100 / (1 + rs)).iloc[-1]
-    
-    # 計算 IBD RS Rating
     rs_rating = calculate_rs_rating(close, spy_close)
     
     return current_price, dist, float(rsi), float(rs_rating)
 
-if "stock_selector" not in st.session_state:
-    st.session_state.stock_selector = None
-
 # ================= 網頁主體 =================
+if "stock_selector" not in st.session_state: st.session_state.stock_selector = None
+
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 三引擎量化交易系統 v7.0")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v8.0")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
-
 default_gemini = st.secrets.get("GEMINI_API_KEY", "")
 default_finnhub = st.secrets.get("FINNHUB_API_KEY", "")
 
@@ -201,7 +148,6 @@ api_key = st.sidebar.text_input("Gemini API Key", value=default_gemini, type="pa
 fh_api_key = st.sidebar.text_input("Finnhub API Key", value=default_finnhub, type="password")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📂 數據庫上傳區")
 uploaded_file = st.sidebar.file_uploader("1️⃣ 上傳 TradingView CSV (偵察選股)", type="csv")
 futu_file = st.sidebar.file_uploader("2️⃣ 上傳 富途持倉 CSV (守護者)", type="csv")
 
@@ -209,39 +155,41 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 雲端歷史紀錄 (點擊跳轉)")
 if history:
     for ticker, data in history.items():
-        if st.sidebar.button(f"🔍 查看 {ticker} ({data['date']})", key=f"hist_{ticker}"):
+        if st.sidebar.button(f"🔍 {ticker} ({data['date']})", key=f"hist_{ticker}"):
             st.session_state.stock_selector = ticker
 else:
     st.sidebar.caption("目前尚無分析紀錄。")
 
-# ================= 預載入大盤 SPY 資料 =================
-spy_data = get_spy_benchmark()
+spy_data, vix_data = get_macro_benchmark()
 
-# ================= 雙分頁架構 =================
-tab1, tab2 = st.tabs(["🎯 偵察模式 (尋找強勢回踩)", "🛡️ 守護者模式 (富途持倉管理)"])
+# ================= 三分頁架構 =================
+tab1, tab2, tab3 = st.tabs(["🎯 偵察模式 (單股深度)", "🛡️ 守護者模式 (持倉管理)", "🗺️ 宏觀與全景戰略 (批次掃描)"])
 
 # ---------------------------------------------------------
-# TAB 1: 偵察模式 (Sniper Mode)
+# TAB 1 & 2: 保持原本的單股與守護者邏輯 (為節省篇幅，這部分與 v7 相同，請保留原本 tab1, tab2 的代碼，我這裡精簡示意)
 # ---------------------------------------------------------
 with tab1:
+    st.info("此區塊為原本的單股深度 K 線圖與報告區域，代碼與 v7.0 完全相同。")
     if uploaded_file:
         df = pd.read_csv(uploaded_file)
-        
-        df['SMA21_Dist_Num'] = (((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
+
+        df['SMA21_Dist_Num'] = (
+                    ((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
         df['縮量狀態'] = df['成交量 1天'] < df['平均成交量 10天']
-        
+
         display_df = df.copy()
-        display_df['價格變化 % 1週'] = display_df['價格變化 % 1週'].apply(lambda x: f"{x:.2f}%" if pd.notnull(x) else "N/A")
+        display_df['價格變化 % 1週'] = display_df['價格變化 % 1週'].apply(
+            lambda x: f"{x:.2f}%" if pd.notnull(x) else "N/A")
         display_df['相對強弱指標 (14) 1天'] = display_df['相對強弱指標 (14) 1天'].fillna(0).round().astype(int)
         display_df['SMA21_Dist'] = display_df['SMA21_Dist_Num'].apply(lambda x: f"{x:.2f}%")
-        
+
         st.subheader("📊 強勢股篩選清單")
-        
+
         sniper_mask = (df['SMA21_Dist_Num'] >= 0) & (df['SMA21_Dist_Num'] <= 5)
         sniper_count = sniper_mask.sum()
-        
+
         only_sniper = st.checkbox(f"🎯 只顯示狙擊區標的 (0-5% 距離) - 目前符合：{sniper_count} 隻", value=False)
-        
+
         if only_sniper:
             view_df = display_df[sniper_mask]
             calc_df = df[sniper_mask]
@@ -249,19 +197,20 @@ with tab1:
             view_df = display_df
             calc_df = df
 
-        st.dataframe(view_df[['商品', '價格', 'SMA21_Dist', '縮量狀態', '相對強弱指標 (14) 1天', '價格變化 % 1週', '產業']], 
-                     use_container_width=True, hide_index=True)
+        st.dataframe(
+            view_df[['商品', '價格', 'SMA21_Dist', '縮量狀態', '相對強弱指標 (14) 1天', '價格變化 % 1週', '產業']],
+            use_container_width=True, hide_index=True)
 
         st.markdown("---")
         st.write("### 🔬 標的深度診斷")
-        
+
         options = calc_df['商品'].tolist()
         if options and (st.session_state.stock_selector not in options):
             st.session_state.stock_selector = options[0]
 
         if options:
             selected_stock = st.selectbox("選擇要分析的標的：", options, key="stock_selector")
-            
+
             stock_data = df[df['商品'] == selected_stock].iloc[0]
             real_sector = stock_data.get('產業', '未知')
             today_date = datetime.now().strftime("%Y-%m-%d")
@@ -269,7 +218,7 @@ with tab1:
             st.write(f"#### 📈 {selected_stock} 交互式 K 線圖")
             # 獲取價格與動能 (RS Rating)
             real_price, real_sma_dist, real_rsi, real_rs_rating = get_dynamic_stats(selected_stock, spy_data)
-            
+
             # K線圖繪製
             hist_data = yf.download(selected_stock, period="6mo", interval="1d", progress=False)
             if not hist_data.empty:
@@ -280,14 +229,18 @@ with tab1:
                 close_p = hist_data['Close'].squeeze()
                 volume_p = hist_data['Volume'].squeeze()
 
-                fig.add_trace(go.Candlestick(x=hist_data.index, open=open_p, high=high_p, low=low_p, close=close_p, name='K線'), row=1, col=1)
+                fig.add_trace(
+                    go.Candlestick(x=hist_data.index, open=open_p, high=high_p, low=low_p, close=close_p, name='K線'),
+                    row=1, col=1)
                 sma21 = close_p.rolling(window=21).mean()
-                fig.add_trace(go.Scatter(x=hist_data.index, y=sma21, line=dict(color='orange', width=2), name='SMA21'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=hist_data.index, y=sma21, line=dict(color='orange', width=2), name='SMA21'),
+                              row=1, col=1)
                 colors = ['green' if c >= o else 'red' for c, o in zip(close_p, open_p)]
                 fig.add_trace(go.Bar(x=hist_data.index, y=volume_p, marker_color=colors, name='成交量'), row=2, col=1)
-                
+
                 fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
-                fig.update_layout(xaxis_rangeslider_visible=False, height=550, showlegend=False, margin=dict(t=10, b=10))
+                fig.update_layout(xaxis_rangeslider_visible=False, height=550, showlegend=False,
+                                  margin=dict(t=10, b=10))
                 st.plotly_chart(fig, use_container_width=True)
 
             st.write(f"#### 🧠 Alpha Focus 偵察報告")
@@ -305,42 +258,43 @@ with tab1:
                 else:
                     with st.spinner('正在從 Finnhub、Google 及 Yahoo 聚合情報並由 AI 審計中...'):
                         try:
-                            news_pool = get_triple_engine_news(selected_stock, fh_api_key, fh_limit=4, g_limit=3, y_limit=2)
-                            
+                            news_pool = get_triple_engine_news(selected_stock, fh_api_key, fh_limit=4, g_limit=3,
+                                                               y_limit=2)
+
                             if not news_pool:
                                 news_text = "過去 14 天內無重大新聞。"
                             else:
-                                news_text = "\n".join([f"{i+1}. {text}" for i, text in enumerate(news_pool)])
-                            
+                                news_text = "\n".join([f"{i + 1}. {text}" for i, text in enumerate(news_pool)])
+
                             client = genai.Client(api_key=api_key)
                             prompt = f"""
                             # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 偵察模式)
-                            
+
                             ## 0. 數據審計輸入 (Anti-Hallucination)
                             - 標的：{selected_stock} | 實時現價：${real_price:.2f} | 距離 SMA21：{real_sma_dist:.2f}% | 板塊：{real_sector} | 基準日：{today_date}
                             - 📊 **核心技術參數**：
                                 - **RSI (14)**：{real_rsi:.0f} (判斷超買超賣)
                                 - **IBD RS Rating (相對強度 1-99)**：{real_rs_rating:.0f}
-                            
+
                             ## 1. 待分析綜合新聞流 (Finnhub + Google + Yahoo)：
                             {news_text}
-                            
+
                             ## 2. 分析師動能判斷法則 (強制執行)：
                             - 結合 RS Rating 判斷新聞動能：
                                 - 如果 RS > 80 且出現 Tier 1 消息：這是機構強烈控盤的「真突破/強勢股」，建議高度關注 (健康回踩/買入)。
                                 - 如果 RS < 40 且出現 Tier 1 消息：資金面上方套牢賣壓極重，這通常是「死貓反彈」或逃命波，必須在風險矩陣中嚴格警告。
-                            
+
                             ## 3. 輸出格式要求 (嚴格遵守)
-                            
+
                             ### 第一部分：偵察表格
                             `[偵察基準日: {today_date} | 數據源: 三引擎 API | 基準價: ${real_price:.2f} | 美東時間: 盤後]`
                             | 代碼 | 板塊 | 參數概覽 (RSI / RS Rating) | 最新狀態 (Price & % vs SMA21) | 核心催化劑(摘要) | 資金動能邏輯 | 狀態評價 | 評分 |
                             | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
                             | {selected_stock} | {real_sector} | RSI: {real_rsi:.0f} <br> **RS: {real_rs_rating:.0f}** | **${real_price:.2f}** ({real_sma_dist:.2f}%) | [一句話總結 Tier 1 或 Risk] | [結合RS Rating分析動能真偽] | [死貓反彈/健康回踩/強勢突破] | [1-100] |
-                            
+
                             ### 第二部分：消息與風險矩陣明細 (雙語對照)
                             **【重要排序指令】：必須嚴格按照以下順序排列：1. 🚀 Tier 1 -> 2. ⚡ Tier 2 -> 3. ⚪ Tier 3 -> 4. ⚠️ Risk。**
-                            
+
                             - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
                               - **中文翻譯**：...
                               - **分析點評**：...
@@ -359,15 +313,17 @@ with tab1:
 # ---------------------------------------------------------
 # TAB 2: 守護者模式 (Guardian Mode)
 # ---------------------------------------------------------
+
 with tab2:
+    st.info("此區塊為原本的富途持倉管理區域，代碼與 v7.0 完全相同。")
     st.subheader("🛡️ 守護者模式：富途持倉健檢與動態止損")
     if futu_file:
         futu_df = pd.read_csv(futu_file)
-        
+
         my_holdings = futu_df['代碼'].astype(str).tolist()
         st.write("已成功載入您的富途持倉。請選擇要執行健檢的標的：")
         selected_holdings = st.multiselect("選擇持倉：", my_holdings, default=my_holdings)
-        
+
         if st.button("🛡️ 執行持倉組合審計 (Portfolio Audit)", type="primary"):
             if not api_key or not fh_api_key:
                 st.error("請確保已在左側邊欄或 Streamlit Secrets 設定 API Key！")
@@ -376,47 +332,47 @@ with tab2:
                     try:
                         portfolio_data = ""
                         today_date = datetime.now().strftime("%Y-%m-%d")
-                        
+
                         for ticker in selected_holdings:
                             row = futu_df[futu_df['代碼'] == ticker].iloc[0]
                             cost_price = row.get('攤薄成本價', 'N/A')
                             profit_pct = row.get('盈虧比例', 'N/A')
-                            
+
                             curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
-                            
+
                             news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=2, y_limit=2)
-                            
+
                             if not news_pool:
                                 n_text = "過去 14 天內無重大新聞。"
                             else:
-                                n_text = "\n".join([f"{i+1}. {text}" for i, text in enumerate(news_pool)])
-                            
+                                n_text = "\n".join([f"{i + 1}. {text}" for i, text in enumerate(news_pool)])
+
                             portfolio_data += f"\n====================\n【{ticker}】\n- 券商成本: ${cost_price} | 目前盈虧: {profit_pct}\n- 實時現價: ${curr_price:.2f} | 距SMA21: {dist:.2f}% | RSI: {rsi:.0f} | **IBD RS Rating: {rs_rating:.0f}**\n- 綜合新聞流:\n{n_text}\n"
 
                         client = genai.Client(api_key=api_key)
-                        
+
                         guardian_prompt = f"""
                         # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 守護者模式)
-                        
+
                         ## 0. 數據審計協議 (Data Integrity Protocol 3.0)
                         以下是我的真實持倉數據，包含三引擎新聞與 IBD 動能參數，請根據這些數據給我深度建議：
                         {portfolio_data}
                         基準日：{today_date}
-                        
+
                         ## 1. 輸出格式要求 (請嚴格遵守以下 Markdown 結構)
-                        
+
                         `[數據源: 三引擎 API/Futu | 審計基準日: {today_date} | 美東時間: 盤後]`
-                        
+
                         ### 📊 1. 持倉速覽總表 (Overview)
                         | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 目前盈虧 | 動能參數 (RSI / RS Rating) | 決策建議 | 守護策略 (具體止損/止盈位) |
                         | :--- | :--- | :--- | :--- | :--- | :--- |
                         (請為我選擇的每一檔股票生成一行總結)
-                        
+
                         ---
                         ### 🔬 2. 個股深度消息與風險矩陣 (Deep Dive)
                         (請為上述每一檔持倉股票，單獨列出新聞的 Tier 評級與雙語點評。必須嚴格按照 1. 🚀 Tier 1 -> 2. ⚡ Tier 2 -> 3. ⚪ Tier 3 -> 4. ⚠️ Risk 排序)
                         (點評時，務必結合 RS Rating 告訴我，目前資金的控盤強度是否支持該股票繼續持有，或是已經轉弱需要 Trim！)
-                        
+
                         (針對每一檔持倉，請使用以下格式：)
                         #### 📌 [股票代碼] 消息面與動能剖析
                         - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
@@ -425,20 +381,126 @@ with tab2:
                         - ⚠️ **[Risk]** (Original English Title Here) [標註新聞來源]
                           - **中文翻譯**：...
                           - **守護者點評**：...
-                        
+
                         ---
                         ### 📋 3. 持倉組合總結 (Portfolio Playbook)
                         1. **組合風險警告**：是否有過度曝險的狀況？資金分配是否合理？
                         2. **急迫行動清單**：列出必須在今日內做出決策的股票（例如破位、動能 RS < 50 且虧損擴大、或利多出盡需獲利了結）。
                         3. **動態止損指南**：根據當前大盤環境，建議如何調整整體的移動止盈策略。
                         """
-                        
+
                         g_response = client.models.generate_content(model='gemini-2.5-flash', contents=guardian_prompt)
                         st.success("持倉審計完成！")
                         with st.container(border=True):
                             st.markdown(g_response.text)
-                            
+
                     except Exception as e:
                         st.error(f"分析時發生錯誤: {e}")
     else:
         st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
+
+
+
+
+# ---------------------------------------------------------
+# TAB 3: 全新！宏觀與全景戰略模式 (Macro & Sector Scan)
+# ---------------------------------------------------------
+with tab3:
+    st.subheader("🗺️ 宏觀與全景戰略 (Alpha Focus Playbook)")
+    st.write("系統將批次掃描您的名單，總結資金流向、篩選出 Top Picks，並生成機構級戰略指南。")
+    
+    if uploaded_file:
+        df = pd.read_csv(uploaded_file)
+        df['SMA21_Dist_Num'] = (((df['價格'] - df['簡單移動平均線 (21) 1天']) / df['簡單移動平均線 (21) 1天']) * 100).round(2)
+        
+        # 預設掃描 0-5% 狙擊區，以節省 API
+        sniper_df = df[(df['SMA21_Dist_Num'] >= 0) & (df['SMA21_Dist_Num'] <= 5)]
+        
+        st.info(f"🎯 準備掃描目標：0-5% 狙擊區共 {len(sniper_df)} 隻股票。系統將自動運用快取，未分析的標的會以 2 秒間隔抓取以保護 API。")
+        
+        if st.button("🚀 啟動全局掃描與生成戰略報告", type="primary"):
+            if not api_key or not fh_api_key:
+                st.error("請確保已輸入 Gemini 與 Finnhub API Key！")
+            else:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                aggregated_data = ""
+                today_date = datetime.now().strftime("%Y-%m-%d")
+                
+                client = genai.Client(api_key=api_key)
+                
+                # 1. 批次處理迴圈 (Batch Processing)
+                target_list = sniper_df['商品'].tolist()
+                for i, ticker in enumerate(target_list):
+                    status_text.text(f"⏳ 正在掃描 ({i+1}/{len(target_list)}): {ticker} ...")
+                    
+                    sector = sniper_df[sniper_df['商品'] == ticker]['產業'].iloc[0]
+                    
+                    # 檢查是否今日已分析且存於快取
+                    if ticker in history and history[ticker].get('date') == today_date:
+                        # 已經分析過了，我們只需抓取它的基本數值加入聚合字串中
+                        curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
+                        aggregated_data += f"- 【{ticker}】 板塊:{sector} | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f}\n"
+                    else:
+                        # 全新標的：執行完整 API 抓取與分析
+                        curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
+                        news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=1, y_limit=1)
+                        news_text = "無重大新聞" if not news_pool else " | ".join(news_pool)
+                        
+                        # 偷偷在背景讓 AI 做一個個股短評存入快取 (方便側邊欄回顧)
+                        mini_prompt = f"分析 {ticker} 最新狀態：價格 ${curr_price}, RS Rating {rs_rating}, 新聞：{news_text}。以繁體中文給出簡短的偵察表格與分級矩陣。"
+                        try:
+                            mini_response = client.models.generate_content(model='gemini-2.5-flash', contents=mini_prompt)
+                            history[ticker] = {"date": today_date, "content": mini_response.text}
+                            save_history(history)
+                        except: pass
+                        
+                        aggregated_data += f"- 【{ticker}】 板塊:{sector} | RSI:{rsi:.0f} | RS Rating:{rs_rating:.0f} | 核心新聞:{news_text[:100]}...\n"
+                        time.sleep(2) # 🛑 安全節流閥：強制暫停 2 秒，避免觸發 Finnhub/Gemini Rate Limit
+                        
+                    progress_bar.progress((i + 1) / len(target_list))
+                
+                status_text.text("✅ 所有標的掃描完畢！正在生成終極全景戰略報告...")
+                
+                # 2. 宏觀數據計算
+                vix_latest = float(vix_data.iloc[-1]) if vix_data is not None else "未知"
+                
+                # 3. 發送終極戰略 Prompt 給 Gemini
+                macro_prompt = f"""
+                # Role: 頂級華爾街宏觀對沖基金經理人 (Alpha Focus - 全景戰略模式)
+
+                ## 0. 當前市場環境
+                - 恐慌指數 (VIX) 最新值：{vix_latest}
+                - 基準日：{today_date}
+
+                ## 1. 狙擊池數據 (以下是本次掃描 0-5% 狙擊區的所有強勢股狀態)
+                {aggregated_data}
+
+                ## 2. 核心任務與輸出格式 (嚴格遵守)
+                請根據上述數據與你龐大的金融知識，生成一份機構級的「Swing Trading 全景戰略報告」。必須包含以下 5 個章節：
+
+                ### 🏆 1. 最強板塊排行 (Top 5 Sectors)
+                [統計上述名單中出現頻率最高、資金最集中的前 5 大板塊，並分析為什麼資金正在湧入這些板塊]
+
+                ### 🌟 2. Alpha Focus Top Picks (精選 5-10 檔)
+                [從名單中，挑選「RS Rating 最高 + 消息面最強 (Tier 1) + 板塊對位」的標的。請詳細講解推薦理由與潛在催化劑]
+
+                ### 🌍 3. 宏觀環境分析 (Macro View)
+                [提出 3-6 個核心宏觀觀點，請結合目前的 VIX 狀態、降息/通膨預期、以及季節性效應]
+
+                ### ⚔️ 4. 戰略建議 (The Swing Playbook)
+                [給出當前環境下的具體操作指南：進攻比例(例如 70% 股票 30% 現金)、防守策略、以及對中小型股或權值股的佈局建議]
+
+                ### 📅 5. 關鍵財報與風險提醒 (Earnings & Risk)
+                [基於你的數據庫知識，列出上述 Top Picks 名單中，未來兩週內可能有財報發布或重大風險事件的標的，提醒避開]
+                """
+                
+                try:
+                    macro_response = client.models.generate_content(model='gemini-2.5-flash', contents=macro_prompt)
+                    st.success("🎉 全景戰略報告生成完畢！")
+                    with st.container(border=True):
+                        st.markdown(macro_response.text)
+                except Exception as e:
+                    st.error(f"生成報告時發生錯誤: {e}")
+    else:
+        st.info("👈 請先上傳 TradingView CSV 以啟動全景掃描模式。")
