@@ -179,11 +179,7 @@ if st.sidebar.button("🧹 清除失敗的快取 (重新掃描)"):
 st.sidebar.markdown("### 📚 雲端歷史紀錄 (點擊查看)")
 if history:
     for ticker, data in history.items():
-        # 當按鈕被點擊時...
         if st.sidebar.button(f"🔍 {ticker} ({data['date']})", key=f"hist_{ticker}"):
-            # 1. 觸發畫面正中央的彈出視窗！
-            show_history_report(ticker, data)
-            # 2. 依然在背景把 stock_selector 設為該股票，以便你如果手動切到 Tab 1 時可以直接載入 K 線圖
             st.session_state.stock_selector = ticker
 else:
     st.sidebar.caption("目前尚無分析紀錄。")
@@ -647,5 +643,6 @@ with tab3:
                                     break
     else:
         st.info("👈 請先上傳 TradingView CSV 以啟動全景模式。")
+
 
 
