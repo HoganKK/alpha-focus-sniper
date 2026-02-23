@@ -530,16 +530,34 @@ with tab3:
                             st.session_state.auto_scan = False
                             st.rerun()
                             
-        # --- 全景報告區塊 (修復按鈕消失問題) ---
+# --- 全景報告區塊 (修復按鈕消失問題 + 新增強制重掃按鈕) ---
         else:
             st.session_state.auto_scan = False
             st.success("✨ 太棒了！所有標的已經全數存檔完畢。請前往上方【📖 沉浸閱讀器】無縫切換瀏覽。")
             
-            macro_cache_key = f"_MACRO_REPORT_{today_date}"
+            # 🚀 新增：強制重新掃描按鈕 (適合收盤後更新，或上傳新名單時使用)
+            if st.button("🔄 強制重新掃描今日清單 (清除當前名單快取)", type="secondary"):
+                # 1. 刪除當前名單中所有股票的快取
+                for ticker in target_list:
+                    if ticker in history:
+                        del history[ticker]
+                
+                # 2. 同時刪除今日大報告的快取，確保下次生成是最新數據
+                macro_cache_key = f"_MACRO_REPORT_{today_date}"
+                if macro_cache_key in history:
+                    del history[macro_cache_key]
+                    
+                save_history(history)
+                st.success("✅ 已成功清除當前名單的快取，準備重新掃描...")
+                time.sleep(1.5)
+                st.rerun()
             
+            st.markdown("---")
+            
+            macro_cache_key = f"_MACRO_REPORT_{today_date}"
             st.markdown("### 🗺️ 終極全景戰略大報告")
             
-            # 🚀 永遠保留的兩個按鈕：一個讀快取(預設)，一個強制更新
+            # 永遠保留的兩個按鈕：一個讀快取(預設)，一個強制更新大報告
             col_report_1, col_report_2 = st.columns([1, 1])
             
             # 預設顯示區塊
@@ -565,6 +583,7 @@ with tab3:
                         final_all_data_text = "\n".join(aggregated_data_list)
                         vix_latest = float(vix_data.iloc[-1]) if vix_data is not None else "未知"
                         
+                        # 🚀 包含「狙擊手潛伏名單」的 Prompt
                         macro_prompt = f"""
                         # Role: 頂級華爾街宏觀對沖基金經理人 (Alpha Focus - 全景戰略)
                         ## 市場背景
@@ -582,7 +601,6 @@ with tab3:
                         3. 宏觀環境分析
                         4. 戰略建議 (The Swing Playbook)
                         5. 關鍵風險提醒
-                        6. 財報日期倒數
                         """
                         for attempt in range(1, 4):
                             try:
@@ -603,6 +621,5 @@ with tab3:
                                 else:
                                     st.error(f"報告生成失敗: {e}")
                                     break
-
-
-
+    else:
+        st.info("👈 請先上傳 TradingView CSV 以啟動全景模式。")
