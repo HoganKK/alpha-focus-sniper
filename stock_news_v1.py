@@ -309,89 +309,89 @@ with tab1:
 # TAB 2: 守護者模式 (Guardian Mode)
 # ---------------------------------------------------------
 with tab2:
-    st.info("富途持倉管理區域。")
-    st.subheader("🛡️ 守護者模式：富途持倉健檢與動態止損")
-    if futu_file:
-        futu_df = pd.read_csv(futu_file)
+    st.info("富途持倉管理區域。")
+    st.subheader("🛡️ 守護者模式：富途持倉健檢與動態止損")
+    if futu_file:
+        futu_df = pd.read_csv(futu_file)
 
-        my_holdings = futu_df['代碼'].astype(str).tolist()
-        st.write("已成功載入您的富途持倉。請選擇要執行健檢的標的：")
-        selected_holdings = st.multiselect("選擇持倉：", my_holdings, default=my_holdings)
+        my_holdings = futu_df['代碼'].astype(str).tolist()
+        st.write("已成功載入您的富途持倉。請選擇要執行健檢的標的：")
+        selected_holdings = st.multiselect("選擇持倉：", my_holdings, default=my_holdings)
 
-        if st.button("🛡️ 執行持倉組合審計 (Portfolio Audit)", type="primary"):
-            if not api_key or not fh_api_key:
-                st.error("請確保已在左側邊欄設定 API Key！")
-            else:
-                with st.spinner('正在獲取最新技術指標、計算 IBD 相對強度與三引擎新聞，進行深度持倉審計...'):
-                    try:
-                        portfolio_data = ""
-                        today_date = datetime.now().strftime("%Y-%m-%d")
+        if st.button("🛡️ 執行持倉組合審計 (Portfolio Audit)", type="primary"):
+            if not api_key or not fh_api_key:
+                st.error("請確保已在左側邊欄設定 API Key！")
+            else:
+                with st.spinner('正在獲取最新技術指標、計算 IBD 相對強度與三引擎新聞，進行深度持倉審計...'):
+                    try:
+                        portfolio_data = ""
+                        today_date = datetime.now().strftime("%Y-%m-%d")
 
-                        for ticker in selected_holdings:
-                            row = futu_df[futu_df['代碼'] == ticker].iloc[0]
-                            cost_price = row.get('攤薄成本價', 'N/A')
-                            profit_pct = row.get('盈虧比例', 'N/A')
+                        for ticker in selected_holdings:
+                            row = futu_df[futu_df['代碼'] == ticker].iloc[0]
+                            cost_price = row.get('攤薄成本價', 'N/A')
+                            profit_pct = row.get('盈虧比例', 'N/A')
 
-                            curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
-                            news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=2, y_limit=2)
+                            curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
+                            news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=2, y_limit=2)
 
-                            n_text = "過去 14 天內無重大新聞。" if not news_pool else "\n".join([f"{i + 1}. {text}" for i, text in enumerate(news_pool)])
+                            n_text = "過去 14 天內無重大新聞。" if not news_pool else "\n".join([f"{i + 1}. {text}" for i, text in enumerate(news_pool)])
 
-                            portfolio_data += f"\n====================\n【{ticker}】\n- 券商成本: ${cost_price} | 目前盈虧: {profit_pct}\n- 實時現價: ${curr_price:.2f} | 距SMA21: {dist:.2f}% | RSI: {rsi:.0f} | **IBD RS Rating: {rs_rating:.0f}**\n- 綜合新聞流:\n{n_text}\n"
+                            portfolio_data += f"\n====================\n【{ticker}】\n- 券商成本: ${cost_price} | 目前盈虧: {profit_pct}\n- 實時現價: ${curr_price:.2f} | 距SMA21: {dist:.2f}% | RSI: {rsi:.0f} | **IBD RS Rating: {rs_rating:.0f}**\n- 綜合新聞流:\n{n_text}\n"
 
-                        # 🚀 核心改動 4：初始化 OpenAI Client (指向中轉)
-                        client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
+                        # 🚀 核心改動 4：初始化 OpenAI Client (指向中轉)
+                        client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
 
-                        guardian_prompt = f"""
-                        # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 守護者模式)
+                        guardian_prompt = f"""
+                        # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 守護者模式)
 
-                        ## 0. 數據審計協議 (Data Integrity Protocol 3.0)
-                        以下是我的真實持倉數據，包含三引擎新聞與 IBD 動能參數，請根據這些數據給我深度建議。
-                        分析時，務必採用「數據校驗風格」嚴格把關：
-                        {portfolio_data}
-                        基準日：{today_date}
+                        ## 0. 數據審計協議 (Data Integrity Protocol 3.0)
+                        以下是我的真實持倉數據，包含三引擎新聞與 IBD 動能參數，請根據這些數據給我深度建議。
+                        分析時，務必採用「數據校驗風格」嚴格把關：
+                        {portfolio_data}
+                        基準日：{today_date}
 
-                        ## 1. 輸出格式要求 (請嚴格遵守以下 Markdown 結構)
-                        `[數據源: 三引擎 API/Futu | 審計基準日: {today_date} | 美東時間: 盤後]`
+                        ## 1. 輸出格式要求 (請嚴格遵守以下 Markdown 結構)
+                        `[數據源: 三引擎 API/Futu | 審計基準日: {today_date} | 美東時間: 盤後]`
 
-                        ### 📊 1. 持倉速覽總表 (Overview)
-                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 目前盈虧 | 動能參數 (RSI / RS Rating) | 決策建議 | 守護策略 (具體止損/止盈位) |
-                        | :--- | :--- | :--- | :--- | :--- | :--- |
-                        (請為我選擇的每一檔股票生成一行總結)
+                        ### 📊 1. 持倉速覽總表 (Overview)
+                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 目前盈虧 | 動能參數 (RSI / RS Rating) | 決策建議 | 守護策略 (具體止損/止盈位) |
+                        | :--- | :--- | :--- | :--- | :--- | :--- |
+                        (請為我選擇的每一檔股票生成一行總結)
 
-                        ---
-                        ### 🔬 2. 個股深度消息與風險矩陣 (Deep Dive)
-                        (點評時，務必結合 RS Rating 告訴我，目前資金的控盤強度是否支持該股票繼續持有，或是已經轉弱需要 Trim！)
-                        #### 📌 [股票代碼] 消息面與動能剖析
-                        - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
-                          - **中文翻譯**：...
-                          - **守護者點評**：...
-                        - ⚠️ **[Risk]** (Original English Title Here) [標註新聞來源]
-                          - **中文翻譯**：...
-                          - **守護者點評**：...
+                        ---
+                        ### 🔬 2. 個股深度消息與風險矩陣 (Deep Dive)
+                        (點評時，務必結合 RS Rating 告訴我，目前資金的控盤強度是否支持該股票繼續持有，或是已經轉弱需要 Trim！)
+                        #### 📌 [股票代碼] 消息面與動能剖析
+                        - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
+                          - **中文翻譯**：...
+                          - **守護者點評**：...
+                        - ⚠️ **[Risk]** (Original English Title Here) [標註新聞來源]
+                          - **中文翻譯**：...
+                          - **守護者點評**：...
 
-                        ---
-                        ### 📋 3. 持倉組合總結 (Portfolio Playbook)
-                        1. **組合風險警告**：是否有過度曝險的狀況？資金分配是否合理？
-                        2. **急迫行動清單**：列出必須在今日內做出決策的股票。
-                        3. **動態止損指南**：根據當前大盤環境，建議如何調整整體的移動止盈策略。
-                        """
-                        
-                        # 🚀 核心改動 5：改用 Chat Completions API
-                        g_response = client.chat.completions.create(
-                            model='gemini-2.5-flash',
-                            messages=[{"role": "user", "content": guardian_prompt}]
-                        )
-                        g_response_text = g_response.choices[0].message.content
+                        ---
+                        ### 📋 3. 持倉組合總結 (Portfolio Playbook)
+                        1. **組合風險警告**：是否有過度曝險的狀況？資金分配是否合理？
+                        2. **急迫行動清單**：列出必須在今日內做出決策的股票。
+                        3. **動態止損指南**：根據當前大盤環境，建議如何調整整體的移動止盈策略。
+                        """
+                        
+                        # 🚀 核心改動 5：改用 Chat Completions API
+                        g_response = client.chat.completions.create(
+                            model='gemini-2.5-flash',
+                            messages=[{"role": "user", "content": guardian_prompt}]
+                        )
+                        g_response_text = g_response.choices[0].message.content
 
-                        st.success("持倉審計完成！")
-                        with st.container(border=True):
-                            st.markdown(g_response_text)
+                        st.success("持倉審計完成！")
+                        with st.container(border=True):
+                            st.markdown(g_response_text)
 
-                    except Exception as e:
-                        st.error(f"分析時發生錯誤: {e}")
-    else:
-        st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
+                    except Exception as e:
+                        st.error(f"分析時發生錯誤: {e}")
+    else:
+        st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
 
 
 # ---------------------------------------------------------
@@ -600,3 +600,4 @@ with tab3:
                                 else:
                                     st.error(f"報告生成失敗: {e}")
                                     break
+
