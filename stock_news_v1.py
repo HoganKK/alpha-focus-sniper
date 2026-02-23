@@ -437,7 +437,7 @@ with tab3:
         
         # ================= 階段一：自動分批推進 =================
         if len(uncached_list) > 0:
-            batch_size = 10
+            batch_size = 5
             current_batch = uncached_list[:batch_size]
             
             st.write(f"👉 **當前批次任務 (共 {len(current_batch)} 隻)**:")
@@ -518,9 +518,9 @@ with tab3:
                         }
                         save_history(history)
                         
-                        # ⏱️ 物理限速器：每隻強制等 8 秒，控制每分鐘請求數量絕對低於 15 次
-                        update_log(f"💾 {ticker} 存檔成功。常規冷卻 8 秒...")
-                        time.sleep(8)
+                        # ⏱️ 物理限速器：每分鐘嚴格限制在 4 次，絕對不超速
+                        update_log(f"💾 {ticker} 存檔成功。常規冷卻 15 秒...")
+                        time.sleep(15)
                         
                     # ♻️ 批次結束，進入自動重整階段
                     update_log("🎉 本批次處理完成！準備刷新網頁，更新左側清單...")
@@ -582,3 +582,4 @@ with tab3:
                                     break
     else:
         st.info("👈 請先上傳 TradingView CSV 以啟動全景模式。")
+
