@@ -135,6 +135,15 @@ def get_dynamic_stats(ticker, spy_close):
 
 # ================= 網頁主體 =================
 if "stock_selector" not in st.session_state: st.session_state.stock_selector = None
+# 🚀 新增：彈出式視窗元件 (對話框)
+@st.dialog("📊 Alpha Focus 歷史偵察報告", width="large")
+def show_history_report(ticker, report_data):
+    st.write(f"### 🎯 {ticker} 深度掃描紀錄")
+    st.info(f"📂 存檔日期: {report_data['date']} | 💡 閱讀此報告完全免費，不消耗 API")
+    
+    # 將歷史報告的內容用精美的框包起來
+    with st.container(border=True):
+        st.markdown(report_data['content'])
 
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
 st.title("🦅 Alpha Focus 三引擎量化交易系統 v10.0 (API中轉版)")
@@ -167,9 +176,14 @@ if st.sidebar.button("🧹 清除失敗的快取 (重新掃描)"):
     else:
         st.sidebar.info("目前沒有失敗的快取紀錄。")
 
+st.sidebar.markdown("### 📚 雲端歷史紀錄 (點擊查看)")
 if history:
     for ticker, data in history.items():
+        # 當按鈕被點擊時...
         if st.sidebar.button(f"🔍 {ticker} ({data['date']})", key=f"hist_{ticker}"):
+            # 1. 觸發畫面正中央的彈出視窗！
+            show_history_report(ticker, data)
+            # 2. 依然在背景把 stock_selector 設為該股票，以便你如果手動切到 Tab 1 時可以直接載入 K 線圖
             st.session_state.stock_selector = ticker
 else:
     st.sidebar.caption("目前尚無分析紀錄。")
@@ -633,4 +647,5 @@ with tab3:
                                     break
     else:
         st.info("👈 請先上傳 TradingView CSV 以啟動全景模式。")
+
 
