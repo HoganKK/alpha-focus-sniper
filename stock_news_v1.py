@@ -403,13 +403,12 @@ with tab2:
 
 
 # ---------------------------------------------------------
-# TAB 3: 全新！宏觀與全景戰略模式 (自動推進分段版)
+# TAB 3: 全新！宏觀與全景戰略模式 (自動推進 5.0 無敵戰車版)
 # ---------------------------------------------------------
 with tab3:
     st.subheader("🗺️ 宏觀與全景戰略 (Alpha Focus Playbook)")
     st.write("採用「自動分段推進」架構：每分析完一小批會自動存檔並更新側邊欄，等待 5 秒後自動進入下一批。")
     
-    # 🛡️ 狀態鎖定：紀錄目前是否處於「自動掃描」模式
     if 'auto_scan' not in st.session_state:
         st.session_state.auto_scan = False
 
@@ -427,7 +426,6 @@ with tab3:
         total_stocks = len(target_list)
         today_date = datetime.now().strftime("%Y-%m-%d")
         
-        # 🔍 核心校驗：找出尚未在今天分析過的股票
         uncached_list = [t for t in target_list if t not in history or history[t].get('date') != today_date]
         cached_count = total_stocks - len(uncached_list)
         
@@ -442,7 +440,6 @@ with tab3:
             st.write(f"👉 **下一批準備分析的標的 ({len(current_batch)} 隻)**:")
             st.code(", ".join(current_batch))
             
-            # 🎛️ 控制台：啟動與暫停按鈕
             col1, col2 = st.columns([1, 3])
             with col1:
                 if not st.session_state.auto_scan:
@@ -454,11 +451,10 @@ with tab3:
                         st.session_state.auto_scan = False
                         st.rerun()
             
-            # ⚙️ 如果處於「自動掃描」狀態，開始執行
             if st.session_state.auto_scan:
                 if not api_key or not fh_api_key:
                     st.error("請確保已輸入 API Key！")
-                    st.session_state.auto_scan = False # 缺少金鑰，自動關閉掃描
+                    st.session_state.auto_scan = False 
                 else:
                     client = genai.Client(api_key=api_key)
                     status_text = st.empty()
@@ -484,24 +480,30 @@ with tab3:
                         
                         mini_prompt = f"分析 {ticker} (價格:{curr_price}, RS:{rs_rating}, 距SMA21:{dist}%)。新聞:{news_text}。請生成詳細雙語報告並按 Tier 1-3 排序。"
                         
-                        ai_content = "⚠️ 分析失敗或觸發限制，僅保留基礎數據。"
-                        max_retries = 2
+                        ai_content = ""
+                        ai_success = False
+                        max_retries = 5 # 🛡️ 升級：允許死磕 5 次
                         
-                        for attempt in range(max_retries):
+                        for attempt in range(1, max_retries + 1):
                             try:
                                 mini_response = client.models.generate_content(model='gemini-2.5-flash', contents=mini_prompt)
                                 ai_content = mini_response.text
                                 update_log(f"✅ {ticker} 分析完畢。")
-                                break
+                                ai_success = True
+                                break # 成功就跳出迴圈
                             except Exception as e:
                                 error_msg = str(e)
                                 if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                                    update_log(f"🛑 {ticker} 觸發限流，休眠 45s... ({attempt+1}/{max_retries})")
-                                    time.sleep(45)
+                                    update_log(f"🛑 {ticker} 觸發限流，強制休眠 60s... (重試 {attempt}/{max_retries})")
+                                    time.sleep(60) # 🛡️ 升級：睡滿一分鐘，保證 API 額度絕對重置
                                 else:
-                                    update_log(f"⚠️ {ticker} 發生未知錯誤。跳過 AI。")
+                                    update_log(f"⚠️ {ticker} 發生非限流錯誤 (可能為安全封鎖)。跳過 AI。")
+                                    ai_content = "⚠️ 此標的觸發 AI 安全過濾或未知錯誤。"
                                     break
                                     
+                        if not ai_success and ai_content == "":
+                            ai_content = "⚠️ 歷經 5 次重試仍遭 API 拒絕，僅保留基礎數據。"
+                            
                         info_str = f"【{ticker}】板塊:{sector} | 距SMA21:{dist:.2f}% | RS:{rs_rating:.0f} | 關鍵新聞:{news_text[:80]}"
                         
                         history[ticker] = {
@@ -514,19 +516,16 @@ with tab3:
                         update_log(f"💾 {ticker} 已成功存檔。休眠 8 秒...")
                         time.sleep(8)
                         
-                    # ⏱️ 批次結束，進入 5 秒倒數
                     countdown_placeholder = st.empty()
                     update_log("🎉 本批次處理完成！左側邊欄即將更新...")
                     for sec in range(5, 0, -1):
                         countdown_placeholder.info(f"⏳ 準備就緒！{sec} 秒後自動推進下一批次... (點擊上方「暫停」按鈕可中斷)")
                         time.sleep(1)
                         
-                    # 倒數結束，觸發重整 (因為 auto_scan 依然是 True，重整後會自動跑下一批)
                     st.rerun()
                     
         # ================= 階段二：終極報告 =================
         else:
-            # 所有標的處理完畢，確保關閉自動掃描狀態
             st.session_state.auto_scan = False
             st.success("✅ 太棒了！所有標的已經全數存檔完畢。左側邊欄已完全更新就緒。")
             
@@ -562,12 +561,21 @@ with tab3:
                         5. 關鍵財報與風險提醒
                         """
                         
-                        try:
-                            macro_response = client.models.generate_content(model='gemini-2.5-flash', contents=macro_prompt)
-                            st.success("🎉 全景戰略報告已成功生成！")
-                            with st.container(border=True):
-                                st.markdown(macro_response.text)
-                        except Exception as e:
-                            st.error(f"總結報告生成失敗: {e}")
+                        # 🛡️ 終極報告生成也加入死磕模式
+                        for attempt in range(1, 6):
+                            try:
+                                macro_response = client.models.generate_content(model='gemini-2.5-flash', contents=macro_prompt)
+                                st.success("🎉 全景戰略報告已成功生成！")
+                                with st.container(border=True):
+                                    st.markdown(macro_response.text)
+                                break
+                            except Exception as e:
+                                if "429" in str(e):
+                                    st.toast(f"🛑 總報告生成觸發限制，等待 60 秒後重試... ({attempt}/5)")
+                                    time.sleep(60)
+                                else:
+                                    st.error(f"總結報告生成失敗: {e}")
+                                    break
     else:
         st.info("👈 請上傳 TradingView CSV 以啟動全景模式。")
+
