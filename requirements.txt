@@ -5,3 +5,4 @@ yfinance
 google-genai
 requests
 feedparser
+openai
