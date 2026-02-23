@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 import json
 import os
 import time
+import re  # 🚀 核心改動 1：引入正則表達式套件，專門對付 AI 亂排版
 
 # --- 歷史紀錄快取系統 ---
 HISTORY_FILE = "alpha_focus_history.json"
@@ -143,7 +144,7 @@ def show_history_report(ticker, report_data):
         st.markdown(report_data['content'])
 
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 三引擎量化交易系統 v10.1 (格式強化版)")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v10.2 (終極防呆標籤版)")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
@@ -175,7 +176,6 @@ if st.sidebar.button("🧹 清除失敗快取 (重新掃描)"):
 
 if history:
     for ticker, data in history.items():
-        # 🚀 隱藏系統大報告，只顯示個股按鈕
         if not ticker.startswith("_MACRO_"):
             if st.sidebar.button(f"🔍 {ticker} ({data['date']})", key=f"hist_{ticker}"):
                 show_history_report(ticker, data)
@@ -189,7 +189,7 @@ spy_data, vix_data = get_macro_benchmark()
 tab1, tab2, tab3 = st.tabs(["🎯 偵察模式 (單股深度)", "🛡️ 守護者模式 (持倉管理)", "🗺️ 宏觀與全景戰略 (批次掃描)"])
 
 # ---------------------------------------------------------
-# TAB 1: 單股深度偵察
+# TAB 1 & TAB 2 (維持原樣)
 # ---------------------------------------------------------
 with tab1:
     st.info("單股深度 K 線圖與報告區域。")
@@ -289,19 +289,100 @@ with tab1:
     else:
         st.info("👈 請先從左側邊欄上傳你的 TradingView CSV 文件以啟動偵察模式。")
 
+
 # ---------------------------------------------------------
-# TAB 2: 守護者模式 (Guardian Mode) (省略修改，保持原樣)
+# TAB 2: 守護者模式 (Guardian Mode)
 # ---------------------------------------------------------
 with tab2:
     st.info("富途持倉管理區域。")
-    # ... (保持原樣，篇幅原因不重複印出) ...
+    st.subheader("🛡️ 守護者模式：富途持倉健檢與動態止損")
+    if futu_file:
+        futu_df = pd.read_csv(futu_file)
 
+        my_holdings = futu_df['代碼'].astype(str).tolist()
+        st.write("已成功載入您的富途持倉。請選擇要執行健檢的標的：")
+        selected_holdings = st.multiselect("選擇持倉：", my_holdings, default=my_holdings)
+
+        if st.button("🛡️ 執行持倉組合審計 (Portfolio Audit)", type="primary"):
+            if not api_key or not fh_api_key:
+                st.error("請確保已在左側邊欄設定 API Key！")
+            else:
+                with st.spinner('正在獲取最新技術指標、計算 IBD 相對強度與三引擎新聞，進行深度持倉審計...'):
+                    try:
+                        portfolio_data = ""
+                        today_date = datetime.now().strftime("%Y-%m-%d")
+
+                        for ticker in selected_holdings:
+                            row = futu_df[futu_df['代碼'] == ticker].iloc[0]
+                            cost_price = row.get('攤薄成本價', 'N/A')
+                            profit_pct = row.get('盈虧比例', 'N/A')
+
+                            curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
+                            news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=2, y_limit=2)
+
+                            n_text = "過去 14 天內無重大新聞。" if not news_pool else "\n".join([f"{i + 1}. {text}" for i, text in enumerate(news_pool)])
+
+                            portfolio_data += f"\n====================\n【{ticker}】\n- 券商成本: ${cost_price} | 目前盈虧: {profit_pct}\n- 實時現價: ${curr_price:.2f} | 距SMA21: {dist:.2f}% | RSI: {rsi:.0f} | **IBD RS Rating: {rs_rating:.0f}**\n- 綜合新聞流:\n{n_text}\n"
+
+                        # 🚀 核心改動 4：初始化 OpenAI Client (指向中轉)
+                        client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
+
+                        guardian_prompt = f"""
+                        # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 守護者模式)
+
+                        ## 0. 數據審計協議 (Data Integrity Protocol 3.0)
+                        以下是我的真實持倉數據，包含三引擎新聞與 IBD 動能參數，請根據這些數據給我深度建議。
+                        分析時，務必採用「數據校驗風格」嚴格把關：
+                        {portfolio_data}
+                        基準日：{today_date}
+
+                        ## 1. 輸出格式要求 (請嚴格遵守以下 Markdown 結構)
+                        `[數據源: 三引擎 API/Futu | 審計基準日: {today_date} | 美東時間: 盤後]`
+
+                        ### 📊 1. 持倉速覽總表 (Overview)
+                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 目前盈虧 | 動能參數 (RSI / RS Rating) | 決策建議 | 守護策略 (具體止損/止盈位) |
+                        | :--- | :--- | :--- | :--- | :--- | :--- |
+                        (請為我選擇的每一檔股票生成一行總結)
+
+                        ---
+                        ### 🔬 2. 個股深度消息與風險矩陣 (Deep Dive)
+                        (點評時，務必結合 RS Rating 告訴我，目前資金的控盤強度是否支持該股票繼續持有，或是已經轉弱需要 Trim！)
+                        #### 📌 [股票代碼] 消息面與動能剖析
+                        - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
+                          - **中文翻譯**：...
+                          - **守護者點評**：...
+                        - ⚠️ **[Risk]** (Original English Title Here) [標註新聞來源]
+                          - **中文翻譯**：...
+                          - **守護者點評**：...
+
+                        ---
+                        ### 📋 3. 持倉組合總結 (Portfolio Playbook)
+                        1. **組合風險警告**：是否有過度曝險的狀況？資金分配是否合理？
+                        2. **急迫行動清單**：列出必須在今日內做出決策的股票。
+                        3. **動態止損指南**：根據當前大盤環境，建議如何調整整體的移動止盈策略。
+                        """
+                        
+                        # 🚀 核心改動 5：改用 Chat Completions API
+                        g_response = client.chat.completions.create(
+                            model='gemini-2.5-flash',
+                            messages=[{"role": "user", "content": guardian_prompt}]
+                        )
+                        g_response_text = g_response.choices[0].message.content
+
+                        st.success("持倉審計完成！")
+                        with st.container(border=True):
+                            st.markdown(g_response_text)
+
+                    except Exception as e:
+                        st.error(f"分析時發生錯誤: {e}")
+    else:
+        st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
 # ---------------------------------------------------------
-# TAB 3: 全新！宏觀與全景戰略模式 (v10.1 批次省流+防呆模板架構)
+# TAB 3: 全新！宏觀與全景戰略模式 (v10.2 終極防呆標籤版)
 # ---------------------------------------------------------
 with tab3:
     st.subheader("🗺️ 宏觀與全景戰略 (Alpha Focus Playbook)")
-    st.write("已啟動「強制防呆模板與防斷線機制」，保護排版不崩壞。")
+    st.write("已啟動「XML級定海神針解析機制」，保護格式絕對不崩壞。")
     
     if 'auto_scan' not in st.session_state:
         st.session_state.auto_scan = False
@@ -359,6 +440,7 @@ with tab3:
                     
                     update_log(f"📦 正在打包 {len(current_batch)} 隻標的...")
                     all_tickers_data = ""
+                    format_instructions = ""
                     
                     for ticker in current_batch:
                         sector = df[df['商品'] == ticker]['產業'].iloc[0]
@@ -366,11 +448,14 @@ with tab3:
                         news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=1, y_limit=1)
                         news_text = "無重大新聞" if not news_pool else " | ".join(news_pool)
                         
-                        all_tickers_data += f"--- START: {ticker} ---\n"
+                        all_tickers_data += f"【股票代碼：{ticker}】\n"
                         all_tickers_data += f"價格:{curr_price}, RS:{rs_rating:.0f}, 距SMA21:{dist:.2f}%, 板塊:{sector}\n"
                         all_tickers_data += f"新聞內容: {news_text}\n\n"
+                        
+                        # 🚀 核心改動 2：動態生成絕對無法混淆的起訖標籤
+                        format_instructions += f"---START_REPORT_{ticker}---\n(在此輸出 {ticker} 的分析報告)\n---END_REPORT_{ticker}---\n\n"
 
-                    # 🚀 終極防呆 Prompt：強制換行、保留來源標籤
+                    # 🚀 核心改動 3：超強硬指令
                     mega_prompt = f"""
                     # Role: 頂尖波段交易分析師 (Alpha Focus)
                     
@@ -379,10 +464,13 @@ with tab3:
                     ## 數據清單：
                     {all_tickers_data}
                     
-                    ## ⚠️ 輸出格式要求 (絕對嚴格遵守，禁止自創表格，必須保留新聞來源)：
-                    請針對每一檔股票，**完全複製並填寫**下方的 Markdown 模板。不要省略任何換行符號（Enter）。
+                    ## ⚠️ 輸出格式要求 (絕對嚴格遵守，禁止自創表格)：
+                    你必須為每一檔股票，使用我指定的「專屬開始與結束標籤」包覆報告內容。如果沒有用標籤包覆，系統將崩潰！
                     
-                    [[[股票代碼]]]
+                    這批次你需要輸出的標籤結構如下：
+                    {format_instructions}
+                    
+                    在每一個專屬標籤內部，請嚴格套用以下 Markdown 模板：
                     
                     **🏢 公司簡介**：
                     [一句話簡述該公司的核心業務與行業地位]
@@ -401,8 +489,6 @@ with tab3:
                     * ⚡ **[Tier 2 潛在影響]** [來源標籤] [英文標題] - [中文點評]
                     * ⚪ **[Tier 3 普遍資訊]** [來源標籤] [英文標題] - [中文點評]
                     * ⚠️ **[Risk 風險警告]** [來源標籤] [英文標題] - [中文點評]
-                    
-                    ======
                     """
 
                     with st.spinner(f"正在由 AI 審計批次: {', '.join(current_batch)}..."):
@@ -428,23 +514,26 @@ with tab3:
                                     break
                                     
                         if mega_success:
-                            # 🚀 強化防呆解析：先清除多餘空白
-                            clean_response = full_response_text.replace("[[[ ", "[[[").replace(" ]]]", "]]]")
-                            
                             for ticker in current_batch:
-                                ticker_marker = f"[[[{ticker}]]]"
+                                # 🚀 核心改動 4：精準捕捉，加上正則表達式作為雙重保險
+                                start_marker = f"---START_REPORT_{ticker}---"
+                                end_marker = f"---END_REPORT_{ticker}---"
                                 parsed_content = ""
                                 
-                                if ticker_marker in clean_response:
+                                if start_marker in full_response_text and end_marker in full_response_text:
                                     try:
-                                        parts = clean_response.split(ticker_marker)
-                                        if len(parts) > 1:
-                                            # 切到下一個分隔符號或是結尾
-                                            parsed_content = parts[1].split("======")[0].split("[[[")[0].strip()
+                                        parsed_content = full_response_text.split(start_marker)[1].split(end_marker)[0].strip()
                                     except Exception as e:
-                                        parsed_content = f"⚠️ 解析失敗，請檢查 AI 輸出格式。"
+                                        parsed_content = f"⚠️ 解析內部發生錯誤。"
                                 else:
-                                    parsed_content = f"⚠️ AI 未按照格式回傳 {ticker} 的資料，保留基礎紀錄。"
+                                    # 如果 AI 加了多餘空白，啟用正則表達式救援！
+                                    pattern = rf"---\s*START_REPORT_{ticker}\s*---(.*?)---\s*END_REPORT_{ticker}\s*---"
+                                    match = re.search(pattern, full_response_text, re.IGNORECASE | re.DOTALL)
+                                    if match:
+                                        parsed_content = match.group(1).strip()
+                                    else:
+                                        # 絕境除錯：把 AI 真正亂寫的內容秀出來給你看
+                                        parsed_content = f"⚠️ AI 完全無視了邊界標籤，導致無法解析 {ticker}。\n\n**【開發者除錯用 - AI 實際輸出片段】：**\n\n{full_response_text[:300]}..."
 
                                 sector = df[df['商品'] == ticker]['產業'].iloc[0]
                                 curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
@@ -475,7 +564,6 @@ with tab3:
             st.session_state.auto_scan = False
             st.success("✨ 太棒了！所有標的已經全數存檔完畢。你可以隨時在左側點擊查看。")
             
-            # 🚀 新增：全景戰略大報告「防扣費快取」機制
             macro_cache_key = f"_MACRO_REPORT_{today_date}"
             
             if st.button("📊 生成終極全景戰略報告", type="primary"):
@@ -488,7 +576,7 @@ with tab3:
                         st.error("請輸入 API Key！")
                     else:
                         client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
-                        with st.spinner("正在為您統整 127 檔股票的戰略視野，這可能需要一點時間..."):
+                        with st.spinner("正在為您統整全盤視野，這可能需要一點時間..."):
                             aggregated_data_list = [history[t]['info_str'] for t in target_list if t in history and 'info_str' in history[t]]
                             final_all_data_text = "\n".join(aggregated_data_list)
                             vix_latest = float(vix_data.iloc[-1]) if vix_data is not None else "未知"
@@ -499,7 +587,6 @@ with tab3:
                             - VIX: {vix_latest} | 基準日: {today_date}
                             
                             ## 全量掃描數據 ({total_stocks} 隻)
-                            請使用您的「數據校驗風格」進行盤點：
                             {final_all_data_text}
                             
                             ## 任務
@@ -519,7 +606,6 @@ with tab3:
                                     )
                                     macro_text = macro_res.choices[0].message.content
                                     
-                                    # 存入專屬快取，保護錢包！
                                     history[macro_cache_key] = {"date": today_date, "content": macro_text}
                                     save_history(history)
                                     
