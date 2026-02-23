@@ -582,6 +582,7 @@ with tab3:
                         3. 宏觀環境分析
                         4. 戰略建議 (The Swing Playbook)
                         5. 關鍵風險提醒
+                        6. 財報日期倒數
                         """
                         for attempt in range(1, 4):
                             try:
@@ -602,5 +603,6 @@ with tab3:
                                 else:
                                     st.error(f"報告生成失敗: {e}")
                                     break
+
 
 
