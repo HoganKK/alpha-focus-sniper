@@ -154,6 +154,19 @@ futu_file = st.sidebar.file_uploader("2️⃣ 上傳 富途持倉 CSV (守護者
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 雲端歷史紀錄 (點擊跳轉)")
+# 🚀 新增：一鍵清洗失敗的髒快取
+if st.sidebar.button("🧹 清除失敗的快取 (重新掃描)"):
+    keys_to_delete = [k for k, v in history.items() if "拒絕" in v.get("content", "") or "保留基礎數據" in v.get("content", "") or "⚠️" in v.get("content", "")]
+    if keys_to_delete:
+        for k in keys_to_delete:
+            del history[k]
+        save_history(history)
+        st.sidebar.success(f"✅ 已清除 {len(keys_to_delete)} 筆失敗紀錄！")
+        time.sleep(2)
+        st.rerun()
+    else:
+        st.sidebar.info("目前沒有失敗的快取紀錄。")
+
 if history:
     for ticker, data in history.items():
         if st.sidebar.button(f"🔍 {ticker} ({data['date']})", key=f"hist_{ticker}"):
@@ -476,18 +489,28 @@ with tab3:
                         all_tickers_data += f"價格:{curr_price}, RS:{rs_rating:.0f}, 距SMA21:{dist:.2f}%, 板塊:{sector}\n"
                         all_tickers_data += f"新聞內容: {news_text}\n\n"
 
+                    # 🚀 強化版 Prompt：加入強制模板與公司簡介要求
                     mega_prompt = f"""
                     # Role: 頂尖波段交易分析師 (Alpha Focus)
                     
-                    請針對以下多個標的進行「個別」分析。在分析過程中，請務必嚴格貫徹「數據校驗風格」，仔細比對價格距離與動能參數的合理性。
+                    請針對以下多個標的進行「個別」分析。
                     
                     ## 數據清單：
                     {all_tickers_data}
                     
-                    ## 輸出格式要求 (嚴格遵守)：
-                    1. 針對每隻股票生成一份雙語報告，包含 Tier 1-3 消息排序。
-                    2. 每隻股票的分析結果「必須」用標記 `[[[TICKER_NAME]]]` 開頭，例如分析 AAPL 時，第一行必須是 `[[[AAPL]]]`。
-                    3. 在每個標記下，精簡扼要地輸出該檔股票的動能判斷與風險提示。
+                    ## ⚠️ 輸出格式要求 (絕對嚴格遵守，禁止自創表格)：
+                    你必須為清單中的「每一檔股票」嚴格套用以下 Markdown 模板。不要省略任何一個標題。
+                    
+                    [[[股票代碼]]]
+                    **🏢 公司簡介**：[請運用你的知識，用一句話簡述該公司的核心業務與行業地位]
+                    **🛡️ 數據校驗**：價格 ${{[填入價格]}} | 距SMA21 {{[填入距離]}}% | RS評級 {{[填入RS]}}
+                    **🧠 動能與風險剖析**：[結合上述數據校驗，給出一小段判斷：資金是否強勢？乖離率是否過高有回調風險？]
+                    **📰 核心新聞矩陣**：
+                    (必須嚴格按以下順序分類，若無該級別新聞則寫「無」)
+                    - 🚀 **[Tier 1 動能催化]** [英文標題] - [中文翻譯與一句話點評]
+                    - ⚡ **[Tier 2 潛在影響]** [英文標題] - [中文翻譯與一句話點評]
+                    - ⚪ **[Tier 3 普遍資訊]** [英文標題] - [中文翻譯與一句話點評]
+                    - ⚠️ **[Risk 風險警告]** [英文標題] - [中文翻譯與一句話點評]
                     """
 
                     with st.spinner(f"正在由 AI 審計批次: {', '.join(current_batch)}..."):
@@ -610,3 +633,4 @@ with tab3:
                                     break
     else:
         st.info("👈 請先上傳 TradingView CSV 以啟動全景模式。")
+
