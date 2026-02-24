@@ -12,7 +12,7 @@ import json
 import os
 import time
 import re
-from fpdf import FPDF # 🚀 核心改動：引入 PDF 生成庫
+from fpdf import FPDF
 
 # --- 歷史紀錄快取系統 ---
 HISTORY_FILE = "alpha_focus_history.json"
@@ -29,53 +29,61 @@ def save_history(history_data):
 
 history = load_history()
 
-# --- PDF 生成引擎 (處理中文) ---
-# --- 修正後的 PDF 生成引擎 (含 Emoji 淨化功能) ---
+# --- PDF 生成引擎 (修復空白問題) ---
 class PDF(FPDF):
     def header(self):
-        try:
-            self.set_font('CustomFont', 'B', 15)
-        except:
-            self.set_font('Arial', 'B', 15)
-        self.cell(0, 10, 'Alpha Focus Macro Report', 0, 1, 'C')
-        self.ln(10)
+        # 嘗試加載中文字型
+        font_path = "font.ttf"
+        if os.path.exists(font_path):
+            try:
+                self.add_font('CustomFont', '', font_path)
+                self.set_font('CustomFont', '', 14)
+            except:
+                self.set_font('Arial', 'B', 14)
+        else:
+            self.set_font('Arial', 'B', 14)
+            
+        self.cell(0, 10, 'Alpha Focus Strategic Report', 0, 1, 'C')
+        self.ln(5)
 
-def remove_emojis(text):
-    # 正則表達式：移除所有 4-byte 的 Unicode 符號 (包含絕大多數 Emoji)
-    return re.sub(r'[\U00010000-\U0010ffff]', '', text)
+def remove_unsupported_chars(text):
+    # 移除 Emoji 和非基本字符，防止 PDF 崩潰
+    return re.sub(r'[^\w\s,.，。：:!！?？()（）\-\[\]%$\n]', '', text)
 
 def generate_pdf_report(content, filename="report.pdf"):
     pdf = PDF()
     pdf.add_page()
     
-    # ⚠️ 關鍵：Streamlit Cloud 需要上傳中文字體
-    font_path = "font.ttf" 
+    font_path = "font.ttf"
     font_ready = False
     
     if os.path.exists(font_path):
-        pdf.add_font('CustomFont', '', font_path, uni=True)
-        pdf.set_font('CustomFont', '', 12)
-        font_ready = True
+        try:
+            # 再次確保字體加載 (有些版本需要 uni=True)
+            pdf.add_font('CustomFont', '', font_path) 
+            pdf.set_font('CustomFont', '', 11)
+            font_ready = True
+        except:
+            pdf.set_font('Arial', '', 11)
     else:
-        pdf.set_font('Arial', '', 12)
+        pdf.set_font('Arial', '', 11)
     
-    # 逐行清洗與寫入
-    for line in content.split('\n'):
-        # 1. 移除 Markdown 粗體符號
+    # 處理內容
+    lines = content.split('\n')
+    for line in lines:
+        # 1. 移除 Markdown 標記
         clean_line = line.replace('**', '').replace('##', '').replace('#', '')
+        # 2. 移除 Emoji (關鍵修復)
+        clean_line = remove_unsupported_chars(clean_line)
         
-        # 2. 🚀 關鍵修正：移除會導致崩潰的 Emoji
-        clean_line = remove_emojis(clean_line)
-        
-        # 3. 替換掉可能導致編碼問題的特殊空白字元
-        clean_line = clean_line.replace('\u200b', '').replace('\xa0', ' ')
-        
-        if clean_line.strip(): # 如果這行不是空白的
+        if clean_line.strip():
             try:
-                pdf.multi_cell(0, 10, clean_line)
-            except Exception as e:
-                print(f"Skipping line due to error: {e}")
-                pass 
+                # 使用 multi_cell 自動換行
+                pdf.multi_cell(0, 8, clean_line)
+                # 微調行距
+                pdf.ln(1) 
+            except:
+                pass
             
     pdf.output(filename)
     return font_ready
@@ -189,7 +197,7 @@ def get_dynamic_stats(ticker, spy_close):
 if "stock_selector" not in st.session_state: st.session_state.stock_selector = None
 
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 三引擎量化交易系統 v10.4 (PDF+排版優化版)")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v10.5 (全能優化版)")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
@@ -222,7 +230,7 @@ spy_data, vix_data = get_macro_benchmark()
 tab_read, tab1, tab2, tab3 = st.tabs(["📖 沉浸閱讀器 (推薦)", "🎯 單股深度掃描", "🛡️ 守護者模式", "🗺️ 宏觀與批次戰略"])
 
 # ---------------------------------------------------------
-# TAB 0: 📖 沉浸閱讀器 (排版與視覺化升級)
+# TAB 0: 📖 沉浸閱讀器 (排版整形與視覺化升級)
 # ---------------------------------------------------------
 with tab_read:
     available_tickers = [k for k in history.keys() if not k.startswith("_MACRO_")]
@@ -260,10 +268,16 @@ with tab_read:
         report_data = history[current_ticker]
         raw_content = report_data['content']
 
-        # 🚀 視覺優化：清洗 LaTeX 符號，讓閱讀更舒服
-        clean_content = raw_content.replace("$", "").replace("{", "").replace("}", "").replace("\%", "%")
+        # 🚀 排版整形手術：強制把標題隔開，讓視覺不擁擠
+        formatted_content = raw_content.replace("**🏢", "\n\n---\n**🏢")\
+                                       .replace("**🛡️", "\n\n**🛡️")\
+                                       .replace("**🧠", "\n\n**🧠")\
+                                       .replace("**📰", "\n\n---\n**📰")
         
-        # 🚀 嘗試解析數據，製作精美的儀表板
+        # 清洗 LaTeX 符號
+        clean_content = formatted_content.replace("$", "").replace("{", "").replace("}", "").replace("\%", "%")
+        
+        # 儀表板數據解析
         try:
             price_match = re.search(r"價格[：:]\s*(\d+\.?\d*)", clean_content)
             dist_match = re.search(r"距SMA21[：:]\s*(-?\d+\.?\d*)", clean_content)
@@ -278,7 +292,6 @@ with tab_read:
             m1.metric("當前價格", f"${p_val}")
             m2.metric("SMA21 乖離率", d_val, delta_color="normal")
             m3.metric("IBD RS Rating", r_val, help="99為最強，1為最弱")
-            st.markdown("---")
         except:
             pass 
 
@@ -289,7 +302,7 @@ with tab_read:
             st.markdown(clean_content)
 
 # ---------------------------------------------------------
-# TAB 1: 單股深度偵察
+# TAB 1: 單股深度偵察 (保持原樣)
 # ---------------------------------------------------------
 with tab1:
     st.info("單股深度 K 線圖與報告區域。")
@@ -336,7 +349,17 @@ with tab1:
                             news_pool = get_triple_engine_news(selected_stock, fh_api_key)
                             news_text = "\n".join(news_pool) if news_pool else "無重大新聞"
                             client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
-                            prompt = f"分析 {selected_stock} (現價:{real_price}, RS:{real_rs_rating}, 距SMA21:{real_sma_dist}%)。新聞:{news_text}。請嚴格按 Markdown 格式輸出：公司簡介、數據校驗、動能剖析、Tier1-3新聞矩陣。"
+                            
+                            # 🚀 單股 Prompt 升級：要求詳細新聞
+                            prompt = f"""
+                            分析 {selected_stock} (現價:{real_price}, RS:{real_rs_rating}, 距SMA21:{real_sma_dist}%)。
+                            新聞流: {news_text}
+                            請嚴格按 Markdown 格式輸出：
+                            1. 公司簡介
+                            2. 數據校驗
+                            3. 動能剖析
+                            4. Tier1-3 新聞矩陣 (每則新聞請提供 2-3 行的詳盡分析，包含具體數據與對股價的影響，不要只有一句話)
+                            """
                             res = client.chat.completions.create(model='gemini-2.5-flash', messages=[{"role":"user","content":prompt}])
                             history[selected_stock] = {"date": today_date, "content": res.choices[0].message.content, "info_str": f"單股更新"}
                             save_history(history)
@@ -390,10 +413,10 @@ with tab2:
                         #### 📌 [股票代碼] 消息面與動能剖析
                         - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
                           - **中文翻譯**：...
-                          - **守護者點評**：...
+                          - **守護者點評 (請提供 2-3 行詳盡分析)**：...
                         - ⚠️ **[Risk]** (Original English Title Here) [標註新聞來源]
                           - **中文翻譯**：...
-                          - **守護者點評**：...
+                          - **守護者點評 (請提供 2-3 行詳盡分析)**：...
                         ---
                         ### 📋 3. 持倉組合總結 (Portfolio Playbook)
                         1. **組合風險警告**：是否有過度曝險的狀況？資金分配是否合理？
@@ -449,7 +472,7 @@ with tab3:
                 if not api_key: st.error("無 API Key")
                 else:
                     client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
-                    # (為節省篇幅，核心邏輯保持 v10.3 的定海神針解析機制)
+                    # (核心邏輯：定海神針解析機制)
                     with st.expander("💻 系統日誌", expanded=True):
                         log_area = st.empty()
                         if 'log_history' not in st.session_state: st.session_state.log_history = []
@@ -471,6 +494,7 @@ with tab3:
                         all_tickers_data += f"【{ticker}】\n價格:{curr_price}, RS:{rs_rating:.0f}, 距SMA21:{dist:.2f}%, 板塊:{sector}\n新聞: {news_text}\n\n"
                         format_instructions += f"---START_REPORT_{ticker}---\n(內容)\n---END_REPORT_{ticker}---\n\n"
 
+                    # 🚀 核心改動：Prompt 升級，要求詳細新聞
                     mega_prompt = f"""
                     # Role: 頂尖波段交易分析師 (Alpha Focus)
                     ## 數據清單：
@@ -483,11 +507,11 @@ with tab3:
                     **🛡️ 數據校驗**：* 價格：${{[填入價格]}} * 距SMA21：{{[填入距離]}}% * RS評級：{{[填入RS]}}
                     **🧠 動能與風險剖析**：[結合數據校驗給出判斷]
                     **📰 核心新聞矩陣**：
-                    (必須抄寫新聞來源例如[Finnhub 機構]，若無則寫「無」)
-                    * 🚀 **[Tier 1 動能催化]** [來源標籤] [英文標題] - [中文點評]
-                    * ⚡ **[Tier 2 潛在影響]** [來源標籤] [英文標題] - [中文點評]
-                    * ⚪ **[Tier 3 普遍資訊]** [來源標籤] [英文標題] - [中文點評]
-                    * ⚠️ **[Risk 風險警告]** [來源標籤] [英文標題] - [中文點評]
+                    (必須抄寫新聞來源例如[Finnhub 機構]，若無則寫「無」。請注意：每則 Tier 1/2/3 新聞，請提供 **2-3 行的詳盡分析**，包含具體數據、事件背景與對股價的潛在影響，不要只有簡短一句話。)
+                    * 🚀 **[Tier 1 動能催化]** [來源標籤] [英文標題] - [詳細中文分析]
+                    * ⚡ **[Tier 2 潛在影響]** [來源標籤] [英文標題] - [詳細中文分析]
+                    * ⚪ **[Tier 3 普遍資訊]** [來源標籤] [英文標題] - [詳細中文分析]
+                    * ⚠️ **[Risk 風險警告]** [來源標籤] [英文標題] - [詳細中文分析]
                     """
 
                     mega_success = False
@@ -574,6 +598,7 @@ with tab3:
                         mime="text/markdown"
                     )
                     if st.button("📄 生成 PDF (需中文字型)"):
+                        # 🚀 這裡調用修復後的 PDF 生成函數
                         font_ready = generate_pdf_report(report_content, pdf_file_name)
                         if font_ready:
                             with open(pdf_file_name, "rb") as pdf_file:
@@ -619,4 +644,3 @@ with tab3:
 
     else:
         st.info("👈 請先上傳 TradingView CSV 以啟動全景模式。")
-
