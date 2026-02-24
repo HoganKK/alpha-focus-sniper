@@ -30,22 +30,25 @@ def save_history(history_data):
 history = load_history()
 
 # --- PDF 生成引擎 (處理中文) ---
+# --- 修正後的 PDF 生成引擎 (含 Emoji 淨化功能) ---
 class PDF(FPDF):
     def header(self):
         try:
-            # 嘗試加載字型，如果失敗則不使用
             self.set_font('CustomFont', 'B', 15)
         except:
             self.set_font('Arial', 'B', 15)
         self.cell(0, 10, 'Alpha Focus Macro Report', 0, 1, 'C')
         self.ln(10)
 
+def remove_emojis(text):
+    # 正則表達式：移除所有 4-byte 的 Unicode 符號 (包含絕大多數 Emoji)
+    return re.sub(r'[\U00010000-\U0010ffff]', '', text)
+
 def generate_pdf_report(content, filename="report.pdf"):
     pdf = PDF()
     pdf.add_page()
     
-    # ⚠️ 關鍵：Streamlit Cloud 需要上傳中文字體 (例如 SimHei.ttf 或 NotoSansTC.ttf)
-    # 請將字體檔改名為 'font.ttf' 並放在與腳本同一層目錄
+    # ⚠️ 關鍵：Streamlit Cloud 需要上傳中文字體
     font_path = "font.ttf" 
     font_ready = False
     
@@ -54,17 +57,25 @@ def generate_pdf_report(content, filename="report.pdf"):
         pdf.set_font('CustomFont', '', 12)
         font_ready = True
     else:
-        # 如果沒有字體，使用預設 (中文會變亂碼，所以我們會提示用戶)
         pdf.set_font('Arial', '', 12)
     
-    # 簡單的行處理
+    # 逐行清洗與寫入
     for line in content.split('\n'):
-        # 過濾掉 Markdown 的粗體符號，讓 PDF 乾淨點
+        # 1. 移除 Markdown 粗體符號
         clean_line = line.replace('**', '').replace('##', '').replace('#', '')
-        try:
-            pdf.multi_cell(0, 10, clean_line)
-        except:
-            pass # 跳過無法編碼的特殊字符
+        
+        # 2. 🚀 關鍵修正：移除會導致崩潰的 Emoji
+        clean_line = remove_emojis(clean_line)
+        
+        # 3. 替換掉可能導致編碼問題的特殊空白字元
+        clean_line = clean_line.replace('\u200b', '').replace('\xa0', ' ')
+        
+        if clean_line.strip(): # 如果這行不是空白的
+            try:
+                pdf.multi_cell(0, 10, clean_line)
+            except Exception as e:
+                print(f"Skipping line due to error: {e}")
+                pass 
             
     pdf.output(filename)
     return font_ready
@@ -608,3 +619,4 @@ with tab3:
 
     else:
         st.info("👈 請先上傳 TradingView CSV 以啟動全景模式。")
+
