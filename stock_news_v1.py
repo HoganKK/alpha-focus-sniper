@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
 from plotly.subplots import make_subplots
 import yfinance as yf
 from openai import OpenAI  
@@ -12,6 +13,7 @@ import json
 import os
 import time
 import re
+import numpy as np
 from fpdf import FPDF
 
 # --- 歷史紀錄快取系統 ---
@@ -32,7 +34,6 @@ history = load_history()
 # --- PDF 生成引擎 (修復空白問題) ---
 class PDF(FPDF):
     def header(self):
-        # 嘗試加載中文字型
         font_path = "font.ttf"
         if os.path.exists(font_path):
             try:
@@ -42,24 +43,20 @@ class PDF(FPDF):
                 self.set_font('Arial', 'B', 14)
         else:
             self.set_font('Arial', 'B', 14)
-            
-        self.cell(0, 10, 'Alpha Focus Strategic Report', 0, 1, 'C')
+        self.cell(0, 10, 'Alpha Focus Institutional Report', 0, 1, 'C')
         self.ln(5)
 
 def remove_unsupported_chars(text):
-    # 移除 Emoji 和非基本字符，防止 PDF 崩潰
     return re.sub(r'[^\w\s,.，。：:!！?？()（）\-\[\]%$\n]', '', text)
 
 def generate_pdf_report(content, filename="report.pdf"):
     pdf = PDF()
     pdf.add_page()
-    
     font_path = "font.ttf"
     font_ready = False
     
     if os.path.exists(font_path):
         try:
-            # 再次確保字體加載 (有些版本需要 uni=True)
             pdf.add_font('CustomFont', '', font_path) 
             pdf.set_font('CustomFont', '', 11)
             font_ready = True
@@ -68,36 +65,27 @@ def generate_pdf_report(content, filename="report.pdf"):
     else:
         pdf.set_font('Arial', '', 11)
     
-    # 處理內容
     lines = content.split('\n')
     for line in lines:
-        # 1. 移除 Markdown 標記
         clean_line = line.replace('**', '').replace('##', '').replace('#', '')
-        # 2. 移除 Emoji (關鍵修復)
         clean_line = remove_unsupported_chars(clean_line)
-        
         if clean_line.strip():
             try:
-                # 使用 multi_cell 自動換行
                 pdf.multi_cell(0, 8, clean_line)
-                # 微調行距
                 pdf.ln(1) 
             except:
                 pass
-            
     pdf.output(filename)
     return font_ready
 
-# --- 核心引擎：Finnhub 基礎抓取 ---
+# --- 核心引擎：Finnhub ---
 def get_finnhub_news(ticker, api_key, limit=4):
     ticker_fh = ticker
     if str(ticker).isdigit() and len(str(ticker)) == 5:
         ticker_fh = f"{str(ticker)[1:]}.HK"
-        
     to_date = datetime.now().strftime('%Y-%m-%d')
     from_date = (datetime.now() - timedelta(days=14)).strftime('%Y-%m-%d')
     url = f"https://finnhub.io/api/v1/company-news?symbol={ticker_fh}&from={from_date}&to={to_date}&token={api_key}"
-    
     try:
         res = requests.get(url, timeout=5).json()
         if isinstance(res, list) and len(res) > 0:
@@ -105,25 +93,21 @@ def get_finnhub_news(ticker, api_key, limit=4):
             for item in res[:limit]:
                 title = item.get('headline', '')
                 summary = item.get('summary', '')[:80]
-                if title:
-                    news_list.append(f"【{title}】 {summary}...")
+                if title: news_list.append(f"【{title}】 {summary}...")
             return news_list
-    except:
-        return []
+    except: return []
     return []
 
-# --- 🌟 超級引擎：三源新聞聚合器 ---
+# --- 三源新聞聚合器 ---
 def get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=3, y_limit=2):
     news_pool = []
     fh_news = get_finnhub_news(ticker, fh_api_key, limit=fh_limit)
     for n in fh_news: news_pool.append(f"[Finnhub 機構] {n}")
-        
     try:
         query = urllib.parse.quote(f"{ticker} stock news")
         feed = feedparser.parse(f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en")
         for entry in feed.entries[:g_limit]: news_pool.append(f"[Google 財經] {entry.title}")
     except: pass
-        
     try:
         yf_ticker = ticker if not (str(ticker).isdigit() and len(str(ticker)) == 5) else f"{str(ticker)[1:]}.HK"
         y_info = yf.Ticker(yf_ticker)
@@ -131,39 +115,117 @@ def get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=3, y_limit=2)
             title = n.get('title') or n.get('headline') or ''
             if title: news_pool.append(f"[Yahoo 快訊] {title}")
     except: pass
-        
     return news_pool
 
-# --- IBD RS Rating 計算邏輯 ---
+# --- 🚀 Antman Greendot 計算引擎 ---
+def calculate_antman_signal(hist_data):
+    if len(hist_data) < 25: return False, "數據不足"
+    recent = hist_data.tail(5)
+    if len(recent) < 5: return False, "數據不足"
+    closes = recent['Close'].values
+    days_up = 0
+    for i in range(1, 5):
+        if closes[i] > closes[i-1]: days_up += 1
+    price_change_4d = (closes[-1] - closes[0]) / closes[0]
+    momentum_pass = (days_up >= 3) and (price_change_4d > 0.06)
+    
+    vol = hist_data['Volume']
+    avg_vol_4d = vol.tail(4).mean()
+    avg_vol_20d = vol.tail(24).iloc[:-4].mean() 
+    volume_pass = avg_vol_4d > (avg_vol_20d * 1.15)
+    
+    opens = recent['Open'].values
+    bull_days = 0
+    for i in range(1, 5):
+        if closes[i] > opens[i]: bull_days += 1
+    power_pass = bull_days >= 3
+    
+    is_antman = momentum_pass and volume_pass and power_pass
+    signal_text = "🟢 **Antman Greendot 爆發訊號!**" if is_antman else "⚪ 無特殊訊號"
+    return is_antman, signal_text
+
+# --- 🚀 RRG 核心算法 (相對輪動圖) ---
+def calculate_rrg_data(tickers, benchmark_symbol="SPY", period="6mo"):
+    # 1. 批量獲取數據
+    all_symbols = tickers + [benchmark_symbol]
+    try:
+        data = yf.download(all_symbols, period=period, interval="1d", progress=False)['Close']
+    except:
+        return pd.DataFrame() # 獲取失敗
+
+    if data.empty or benchmark_symbol not in data.columns:
+        return pd.DataFrame()
+
+    rrg_results = []
+    
+    # 2. 計算 RRG 指標
+    benchmark_series = data[benchmark_symbol]
+    
+    for ticker in tickers:
+        if ticker not in data.columns: continue
+        
+        # RS (Relative Strength) = Stock / Benchmark
+        rs_series = data[ticker] / benchmark_series
+        
+        # RRG 趨勢指標 (JdK RS-Ratio 近似值): RS 與其移動平均線的距離
+        # 這裡使用 10日 RS 與 10日 MA 的比較，正規化到 100
+        rs_ma = rs_series.rolling(window=10).mean()
+        # 簡單標準化：(RS / RS_MA) * 100
+        rs_ratio = (rs_series / rs_ma) * 100
+        
+        # RRG 動能指標 (JdK RS-Momentum 近似值): RS-Ratio 的變化率
+        # (Ratio / Ratio_Prev) * 100
+        rs_momentum = (rs_ratio / rs_ratio.shift(1)) * 100
+        
+        # 取最新一天數據
+        if len(rs_ratio) > 0 and not pd.isna(rs_ratio.iloc[-1]):
+            latest_ratio = rs_ratio.iloc[-1]
+            latest_mom = rs_momentum.iloc[-1]
+            
+            # 判斷象限
+            quadrant = ""
+            if latest_ratio > 100 and latest_mom > 100: quadrant = "Leading (領先)" # 綠
+            elif latest_ratio > 100 and latest_mom < 100: quadrant = "Weakening (轉弱)" # 黃
+            elif latest_ratio < 100 and latest_mom < 100: quadrant = "Lagging (落後)" # 紅
+            elif latest_ratio < 100 and latest_mom > 100: quadrant = "Improving (改善)" # 藍
+            
+            rrg_results.append({
+                "Ticker": ticker,
+                "RS_Ratio": latest_ratio,
+                "RS_Momentum": latest_mom,
+                "Quadrant": quadrant
+            })
+            
+    return pd.DataFrame(rrg_results)
+
+# --- IBD RS Rating ---
 @st.cache_data(ttl=3600)
 def get_macro_benchmark():
     spy = yf.download("SPY", period="1y", interval="1d", progress=False)
     vix = yf.download("^VIX", period="1mo", interval="1d", progress=False)
-    
     spy_close = spy['Close'].squeeze() if not spy.empty else None
-    if isinstance(spy_close, pd.DataFrame): spy_close = spy_close.iloc[:, 0]
-    
     vix_close = vix['Close'].squeeze() if not vix.empty else None
-    if isinstance(vix_close, pd.DataFrame): vix_close = vix_close.iloc[:, 0]
-    
     return spy_close, vix_close
 
 def calculate_rs_rating(stock_close, spy_close):
     if stock_close is None or spy_close is None or len(stock_close) < 10 or len(spy_close) < 10: return 50
-    n63, n126, n189, n252 = min(63, len(stock_close)-1, len(spy_close)-1), min(126, len(stock_close)-1, len(spy_close)-1), min(189, len(stock_close)-1, len(spy_close)-1), min(252, len(stock_close)-1, len(spy_close)-1)
-
+    n63 = min(63, len(stock_close)-1, len(spy_close)-1)
+    n126 = min(126, len(stock_close)-1, len(spy_close)-1)
+    n189 = min(189, len(stock_close)-1, len(spy_close)-1)
+    n252 = min(252, len(stock_close)-1, len(spy_close)-1)
+    
     rs_stock = 0.4 * (stock_close.iloc[-1] / stock_close.iloc[-1 - n63]) + 0.2 * (stock_close.iloc[-1] / stock_close.iloc[-1 - n126]) + 0.2 * (stock_close.iloc[-1] / stock_close.iloc[-1 - n189]) + 0.2 * (stock_close.iloc[-1] / stock_close.iloc[-1 - n252])
     rs_ref = 0.4 * (spy_close.iloc[-1] / spy_close.iloc[-1 - n63]) + 0.2 * (spy_close.iloc[-1] / spy_close.iloc[-1 - n126]) + 0.2 * (spy_close.iloc[-1] / spy_close.iloc[-1 - n189]) + 0.2 * (spy_close.iloc[-1] / spy_close.iloc[-1 - n252])
-
+    
     if rs_ref == 0: return 50
     score = (rs_stock / rs_ref) * 100
     first, scnd, thrd, frth, ffth, sxth, svth = 195.93, 117.11, 99.04, 91.66, 80.96, 53.64, 24.86
-
+    
     def f_att(s, tP, sP, rU, rD, w):
         sum_val = min(s + (s - sP) * w, tP - 1)
         denom = (sP / rD) - (((sP / rD) - ((tP - 1) / rU)) / (tP - 1 - sP) if (tP - 1 - sP) != 0 else 0) * (s - sP)
         return max(min(sum_val / denom if denom != 0 else rD, rU), rD)
-
+        
     if score >= first: return 99
     if score <= svth: return 1
     if scnd <= score < first: return f_att(score, first, scnd, 98, 90, 0.33)
@@ -177,9 +239,8 @@ def calculate_rs_rating(stock_close, spy_close):
 def get_dynamic_stats(ticker, spy_close):
     yf_ticker = ticker if not (str(ticker).isdigit() and len(str(ticker)) == 5) else f"{str(ticker)[1:]}.HK"
     df = yf.download(yf_ticker, period="1y", interval="1d", progress=False)
-    if df.empty: return 0, 0, 0, 50
+    if df.empty: return 0, 0, 0, 50, None
     close = df['Close'].squeeze()
-    if isinstance(close, pd.DataFrame): close = close.iloc[:, 0]
     
     current_price = float(close.iloc[-1])
     sma21 = float(close.rolling(21).mean().iloc[-1])
@@ -191,19 +252,18 @@ def get_dynamic_stats(ticker, spy_close):
     rsi = 100 - (100 / (1 + rs)).iloc[-1]
     rs_rating = calculate_rs_rating(close, spy_close)
     
-    return current_price, dist, float(rsi), float(rs_rating)
+    return current_price, dist, float(rsi), float(rs_rating), df 
 
 # ================= 網頁主體 =================
 if "stock_selector" not in st.session_state: st.session_state.stock_selector = None
 
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 三引擎量化交易系統 v10.5 (全能優化版)")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v12.0 (機構戰略 RRG 版)")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
 default_gemini = st.secrets.get("GEMINI_API_KEY", "")
 default_finnhub = st.secrets.get("FINNHUB_API_KEY", "")
-
 api_key = st.sidebar.text_input("AI API Key (支援中轉)", value=default_gemini, type="password")
 fh_api_key = st.sidebar.text_input("Finnhub API Key", value=default_finnhub, type="password")
 
@@ -212,8 +272,7 @@ uploaded_file = st.sidebar.file_uploader("1️⃣ 上傳 TradingView CSV (偵察
 futu_file = st.sidebar.file_uploader("2️⃣ 上傳 富途持倉 CSV (守護者)", type="csv")
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 🧹 系統維護")
-if st.sidebar.button("清除失敗快取 (重新掃描)"):
+if st.sidebar.button("🧹 清除失敗快取 (重新掃描)"):
     keys_to_delete = [k for k, v in history.items() if "拒絕" in v.get("content", "") or "保留基礎數據" in v.get("content", "") or "⚠️" in v.get("content", "")]
     if keys_to_delete:
         for k in keys_to_delete: del history[k]
@@ -225,25 +284,22 @@ if st.sidebar.button("清除失敗快取 (重新掃描)"):
         st.sidebar.info("目前沒有失敗的快取。")
 
 spy_data, vix_data = get_macro_benchmark()
+vix_current = float(vix_data.iloc[-1]) if vix_data is not None else 20.0
 
 # ================= 三分頁架構 =================
-tab_read, tab1, tab2, tab3 = st.tabs(["📖 沉浸閱讀器 (推薦)", "🎯 單股深度掃描", "🛡️ 守護者模式", "🗺️ 宏觀與批次戰略"])
+tab_read, tab1, tab2, tab3 = st.tabs(["📖 沉浸閱讀器", "🎯 單股深度 (Antman)", "🛡️ 守護者 (交通燈)", "🗺️ 全景戰略 (RRG)"])
 
 # ---------------------------------------------------------
-# TAB 0: 📖 沉浸閱讀器 (排版整形與視覺化升級)
+# TAB 0: 📖 沉浸閱讀器
 # ---------------------------------------------------------
 with tab_read:
     available_tickers = [k for k in history.keys() if not k.startswith("_MACRO_")]
-    
     if not available_tickers:
-        st.info("目前雲端還沒有任何掃描報告。請先去「宏觀與批次戰略」進行掃描！")
+        st.info("目前無報告，請先至【宏觀與全景戰略】進行掃描。")
     else:
-        st.write("### 🧠 專屬報告沉浸閱讀區")
-        
-        if 'reader_index' not in st.session_state:
-            st.session_state.reader_index = 0
-        if st.session_state.reader_index >= len(available_tickers):
-            st.session_state.reader_index = 0
+        st.write("### 🧠 機構級報告閱讀區")
+        if 'reader_index' not in st.session_state: st.session_state.reader_index = 0
+        if st.session_state.reader_index >= len(available_tickers): st.session_state.reader_index = 0
 
         col_prev, col_sel, col_next = st.columns([1, 4, 1])
         with col_prev:
@@ -257,9 +313,7 @@ with tab_read:
                     st.session_state.reader_index += 1
                     st.rerun()
         with col_sel:
-            selected_read_ticker = st.selectbox(
-                "快速跳轉：", options=available_tickers, index=st.session_state.reader_index, label_visibility="collapsed"
-            )
+            selected_read_ticker = st.selectbox("快速跳轉：", options=available_tickers, index=st.session_state.reader_index, label_visibility="collapsed")
             if selected_read_ticker != available_tickers[st.session_state.reader_index]:
                 st.session_state.reader_index = available_tickers.index(selected_read_ticker)
                 st.rerun()
@@ -267,42 +321,28 @@ with tab_read:
         current_ticker = available_tickers[st.session_state.reader_index]
         report_data = history[current_ticker]
         raw_content = report_data['content']
-
-        # 🚀 排版整形手術：強制把標題隔開，讓視覺不擁擠
-        formatted_content = raw_content.replace("**🏢", "\n\n---\n**🏢")\
-                                       .replace("**🛡️", "\n\n**🛡️")\
-                                       .replace("**🧠", "\n\n**🧠")\
-                                       .replace("**📰", "\n\n---\n**📰")
-        
-        # 清洗 LaTeX 符號
+        formatted_content = raw_content.replace("**🏢", "\n\n---\n**🏢").replace("**🛡️", "\n\n**🛡️").replace("**🧠", "\n\n**🧠").replace("**📰", "\n\n---\n**📰")
         clean_content = formatted_content.replace("$", "").replace("{", "").replace("}", "").replace("\%", "%")
         
-        # 儀表板數據解析
         try:
             price_match = re.search(r"價格[：:]\s*(\d+\.?\d*)", clean_content)
             dist_match = re.search(r"距SMA21[：:]\s*(-?\d+\.?\d*)", clean_content)
             rs_match = re.search(r"RS評級[：:]\s*(\d+)", clean_content)
-            
             p_val = price_match.group(1) if price_match else "N/A"
             d_val = dist_match.group(1) + "%" if dist_match else "N/A"
             r_val = rs_match.group(1) if rs_match else "N/A"
-            
             st.markdown("---")
             m1, m2, m3 = st.columns(3)
             m1.metric("當前價格", f"${p_val}")
-            m2.metric("SMA21 乖離率", d_val, delta_color="normal")
-            m3.metric("IBD RS Rating", r_val, help="99為最強，1為最弱")
-        except:
-            pass 
+            m2.metric("SMA21 乖離率", d_val)
+            m3.metric("IBD RS Rating", r_val, help="99為最強")
+        except: pass 
 
         st.subheader(f"🎯 {current_ticker} 深度報告")
-        st.caption(f"📂 存檔基準日: {report_data['date']}")
-        
-        with st.container(border=True):
-            st.markdown(clean_content)
+        with st.container(border=True): st.markdown(clean_content)
 
 # ---------------------------------------------------------
-# TAB 1: 單股深度偵察 (保持原樣)
+# TAB 1: 單股深度偵察 (Antman Greendot)
 # ---------------------------------------------------------
 with tab1:
     st.info("單股深度 K 線圖與報告區域。")
@@ -313,9 +353,8 @@ with tab1:
         display_df = df.copy()
         display_df['SMA21_Dist'] = display_df['SMA21_Dist_Num'].apply(lambda x: f"{x:.2f}%")
         
-        st.subheader("📊 強勢股篩選清單")
         sniper_mask = (df['SMA21_Dist_Num'] >= 0) & (df['SMA21_Dist_Num'] <= 5)
-        only_sniper = st.checkbox(f"🎯 只顯示狙擊區標的 (0-5% 距離) - 目前符合：{sniper_mask.sum()} 隻", value=False)
+        only_sniper = st.checkbox(f"🎯 只顯示狙擊區標的 (0-5% 距離)", value=False)
         view_df = display_df[sniper_mask] if only_sniper else display_df
         calc_df = df[sniper_mask] if only_sniper else df
         st.dataframe(view_df[['商品', '價格', 'SMA21_Dist', '縮量狀態', '產業']], use_container_width=True, hide_index=True)
@@ -327,18 +366,19 @@ with tab1:
                 st.session_state.stock_selector = options[0]
             selected_stock = st.selectbox("選擇標的：", options, key="stock_selector")
             
-            real_price, real_sma_dist, real_rsi, real_rs_rating = get_dynamic_stats(selected_stock, spy_data)
-            stock_data = df[df['商品'] == selected_stock].iloc[0]
-            real_sector = stock_data.get('產業', '未知')
-            today_date = datetime.now().strftime("%Y-%m-%d")
+            real_price, real_sma_dist, real_rsi, real_rs_rating, stock_hist_df = get_dynamic_stats(selected_stock, spy_data)
+            
+            # 🚀 計算 Antman Greendot
+            is_antman, antman_text = calculate_antman_signal(stock_hist_df)
+            if is_antman: st.success(antman_text)
+            else: st.info(antman_text)
 
+            today_date = datetime.now().strftime("%Y-%m-%d")
+            
             hist_data = yf.download(selected_stock, period="6mo", interval="1d", progress=False)
             if not hist_data.empty:
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_width=[0.3, 0.7])
                 fig.add_trace(go.Candlestick(x=hist_data.index, open=hist_data['Open'].squeeze(), high=hist_data['High'].squeeze(), low=hist_data['Low'].squeeze(), close=hist_data['Close'].squeeze(), name='K線'), row=1, col=1)
-                sma21 = hist_data['Close'].squeeze().rolling(window=21).mean()
-                fig.add_trace(go.Scatter(x=hist_data.index, y=sma21, line=dict(color='orange', width=2), name='SMA21'), row=1, col=1)
-                fig.update_layout(xaxis_rangeslider_visible=False, height=500, margin=dict(t=10, b=10))
                 st.plotly_chart(fig, use_container_width=True)
 
             if st.button("🚀 單股強制更新 (覆蓋快取)", type="primary"):
@@ -349,16 +389,15 @@ with tab1:
                             news_pool = get_triple_engine_news(selected_stock, fh_api_key)
                             news_text = "\n".join(news_pool) if news_pool else "無重大新聞"
                             client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
-                            
-                            # 🚀 單股 Prompt 升級：要求詳細新聞
                             prompt = f"""
                             分析 {selected_stock} (現價:{real_price}, RS:{real_rs_rating}, 距SMA21:{real_sma_dist}%)。
+                            技術訊號: {antman_text} (若為 Greendot，請強調動能爆發的可能性)。
                             新聞流: {news_text}
                             請嚴格按 Markdown 格式輸出：
                             1. 公司簡介
-                            2. 數據校驗
+                            2. 數據校驗 (包含 Antman 訊號解讀)
                             3. 動能剖析
-                            4. Tier1-3 新聞矩陣 (每則新聞請提供 2-3 行的詳盡分析，包含具體數據與對股價的影響，不要只有一句話)
+                            4. Tier1-3 新聞矩陣 (每則新聞提供 2-3 行詳盡分析)
                             """
                             res = client.chat.completions.create(model='gemini-2.5-flash', messages=[{"role":"user","content":prompt}])
                             history[selected_stock] = {"date": today_date, "content": res.choices[0].message.content, "info_str": f"單股更新"}
@@ -367,21 +406,20 @@ with tab1:
                         except Exception as e: st.error(str(e))
 
 # ---------------------------------------------------------
-# TAB 2: 守護者模式 (完全保留)
+# TAB 2: 守護者模式 (交通燈風控)
 # ---------------------------------------------------------
 with tab2:
     st.subheader("🛡️ 守護者模式：富途持倉健檢與動態止損")
     if futu_file:
         futu_df = pd.read_csv(futu_file)
         my_holdings = futu_df['代碼'].astype(str).tolist()
-        st.write("已成功載入您的富途持倉。請選擇要執行健檢的標的：")
+        st.write("已成功載入您的富途持倉。")
         selected_holdings = st.multiselect("選擇持倉：", my_holdings, default=my_holdings)
 
         if st.button("🛡️ 執行持倉組合審計 (Portfolio Audit)", type="primary"):
-            if not api_key or not fh_api_key:
-                st.error("請確保已在左側邊欄設定 API Key！")
+            if not api_key: st.error("請確保已設定 API Key！")
             else:
-                with st.spinner('正在獲取最新技術指標、計算 IBD 相對強度與三引擎新聞，進行深度持倉審計...'):
+                with st.spinner('正在進行交通燈風控運算...'):
                     try:
                         portfolio_data = ""
                         today_date = datetime.now().strftime("%Y-%m-%d")
@@ -389,54 +427,40 @@ with tab2:
                             row = futu_df[futu_df['代碼'] == ticker].iloc[0]
                             cost_price = row.get('攤薄成本價', 'N/A')
                             profit_pct = row.get('盈虧比例', 'N/A')
-                            curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
+                            curr_price, dist, rsi, rs_rating, _ = get_dynamic_stats(ticker, spy_data)
                             news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=2, y_limit=2)
-                            n_text = "過去 14 天內無重大新聞。" if not news_pool else "\n".join([f"{i + 1}. {text}" for i, text in enumerate(news_pool)])
-                            portfolio_data += f"\n====================\n【{ticker}】\n- 券商成本: ${cost_price} | 目前盈虧: {profit_pct}\n- 實時現價: ${curr_price:.2f} | 距SMA21: {dist:.2f}% | RSI: {rsi:.0f} | **IBD RS Rating: {rs_rating:.0f}**\n- 綜合新聞流:\n{n_text}\n"
+                            n_text = "\n".join(news_pool) if news_pool else "無新聞"
+                            portfolio_data += f"\n====================\n【{ticker}】\n- 成本: ${cost_price} | 盈虧: {profit_pct}\n- 現價: ${curr_price:.2f} | 距SMA21: {dist:.2f}% | RS: {rs_rating:.0f}\n- 新聞:\n{n_text}\n"
 
                         client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
                         guardian_prompt = f"""
-                        # Role: 證據導向的華爾街 Swing Trading 分析師 (Alpha Focus - 守護者模式)
-                        ## 0. 數據審計協議
-                        以下是我的真實持倉數據，包含三引擎新聞與 IBD 動能參數，請根據這些數據給我深度建議。
-                        分析時，務必採用「數據校驗風格」嚴格把關：
+                        # Role: 證據導向的華爾街風險控制官 (Risk Manager)
+                        ## 1. 市場環境判斷 (Traffic Light System)
+                        當前 VIX 指數為: {vix_current:.2f}。
+                        請根據 VIX 水平判定當前操作環境：
+                        - **🟢 綠燈 (Easy Dollar)**: VIX < 15，建議倉位 75-100%，止損 -3%~-5%。
+                        - **🟡 黃燈 (Neutral)**: VIX 15-20，建議倉位 50-75%，止損 -2%~-3%。
+                        - **🔴 紅燈 (Hard Penny)**: VIX > 20，建議倉位 0-50%，止損 -1%~-2%，現金為王。
+                        ## 2. 持倉審計
                         {portfolio_data}
                         基準日：{today_date}
-                        ## 1. 輸出格式要求 (請嚴格遵守以下 Markdown 結構)
-                        ### 📊 1. 持倉速覽總表 (Overview)
-                        | 代碼 | 持倉成本 / 最新價格 (% vs SMA21) | 目前盈虧 | 動能參數 (RSI / RS Rating) | 決策建議 | 守護策略 (具體止損/止盈位) |
-                        | :--- | :--- | :--- | :--- | :--- | :--- |
-                        (請為我選擇的每一檔股票生成一行總結)
-                        ---
-                        ### 🔬 2. 個股深度消息與風險矩陣 (Deep Dive)
-                        (點評時，務必結合 RS Rating 告訴我，目前資金的控盤強度是否支持該股票繼續持有，或是已經轉弱需要 Trim！)
-                        #### 📌 [股票代碼] 消息面與動能剖析
-                        - 🚀 **[Tier 1]** (Original English Title Here) [標註新聞來源]
-                          - **中文翻譯**：...
-                          - **守護者點評 (請提供 2-3 行詳盡分析)**：...
-                        - ⚠️ **[Risk]** (Original English Title Here) [標註新聞來源]
-                          - **中文翻譯**：...
-                          - **守護者點評 (請提供 2-3 行詳盡分析)**：...
-                        ---
-                        ### 📋 3. 持倉組合總結 (Portfolio Playbook)
-                        1. **組合風險警告**：是否有過度曝險的狀況？資金分配是否合理？
-                        2. **急迫行動清單**：列出必須在今日內做出決策的股票。
-                        3. **動態止損指南**：根據當前大盤環境，建議如何調整整體的移動止盈策略。
+                        ## 3. 輸出要求
+                        請先給出 **「🚦 市場交通燈狀態」** 與 **「💰 建議總倉位上限」**。
+                        接著輸出持倉表格：
+                        | 代碼 | 狀態 (% vs SMA21) | 盈虧 | 建議操作 (加倉/減倉/止損) | 具體止損位 |
+                        最後提供一段「組合風險總結」，若為紅燈請語氣嚴厲提醒防守。
                         """
                         g_response = client.chat.completions.create(model='gemini-2.5-flash', messages=[{"role": "user", "content": guardian_prompt}])
-                        g_response_text = g_response.choices[0].message.content
-                        st.success("持倉審計完成！")
-                        with st.container(border=True): st.markdown(g_response_text)
-                    except Exception as e: st.error(f"分析時發生錯誤: {e}")
-    else:
-        st.info("👈 請上傳您的富途持倉 CSV 以啟動守護者模式。")
+                        st.success("審計完成！")
+                        with st.container(border=True): st.markdown(g_response.choices[0].message.content)
+                    except Exception as e: st.error(f"分析錯誤: {e}")
+    else: st.info("👈 請上傳您的富途持倉 CSV。")
 
 # ---------------------------------------------------------
-# TAB 3: 宏觀與全景戰略模式 (PDF 下載 + 日期標註)
+# TAB 3: 宏觀與全景戰略 (RRG 升級)
 # ---------------------------------------------------------
 with tab3:
     st.subheader("🗺️ 宏觀與全景戰略 (Alpha Focus Playbook)")
-    
     if 'auto_scan' not in st.session_state: st.session_state.auto_scan = False
 
     if uploaded_file:
@@ -452,6 +476,7 @@ with tab3:
         st.info(f"📊 總進度：{cached_count}/{len(target_list)} 已存檔")
         st.progress(cached_count / len(target_list) if len(target_list) > 0 else 0)
         
+        # --- 自動掃描區塊 ---
         if len(uncached_list) > 0:
             batch_size = 5 
             current_batch = uncached_list[:batch_size]
@@ -472,7 +497,7 @@ with tab3:
                 if not api_key: st.error("無 API Key")
                 else:
                     client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
-                    # (核心邏輯：定海神針解析機制)
+                    # (定海神針解析機制，與前版相同)
                     with st.expander("💻 系統日誌", expanded=True):
                         log_area = st.empty()
                         if 'log_history' not in st.session_state: st.session_state.log_history = []
@@ -485,16 +510,14 @@ with tab3:
                     update_log(f"📦 正在打包 {len(current_batch)} 隻標的...")
                     all_tickers_data = ""
                     format_instructions = ""
-                    
                     for ticker in current_batch:
                         sector = df[df['商品'] == ticker]['產業'].iloc[0]
-                        curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
+                        curr_price, dist, rsi, rs_rating, _ = get_dynamic_stats(ticker, spy_data)
                         news_pool = get_triple_engine_news(ticker, fh_api_key, fh_limit=3, g_limit=1, y_limit=1)
                         news_text = "無重大新聞" if not news_pool else " | ".join(news_pool)
                         all_tickers_data += f"【{ticker}】\n價格:{curr_price}, RS:{rs_rating:.0f}, 距SMA21:{dist:.2f}%, 板塊:{sector}\n新聞: {news_text}\n\n"
                         format_instructions += f"---START_REPORT_{ticker}---\n(內容)\n---END_REPORT_{ticker}---\n\n"
 
-                    # 🚀 核心改動：Prompt 升級，要求詳細新聞
                     mega_prompt = f"""
                     # Role: 頂尖波段交易分析師 (Alpha Focus)
                     ## 數據清單：
@@ -507,7 +530,7 @@ with tab3:
                     **🛡️ 數據校驗**：* 價格：${{[填入價格]}} * 距SMA21：{{[填入距離]}}% * RS評級：{{[填入RS]}}
                     **🧠 動能與風險剖析**：[結合數據校驗給出判斷]
                     **📰 核心新聞矩陣**：
-                    (必須抄寫新聞來源例如[Finnhub 機構]，若無則寫「無」。請注意：每則 Tier 1/2/3 新聞，請提供 **2-3 行的詳盡分析**，包含具體數據、事件背景與對股價的潛在影響，不要只有簡短一句話。)
+                    (必須抄寫新聞來源例如[Finnhub 機構]，若無則寫「無」。每則 Tier 1/2/3 新聞請提供 **2-3 行詳盡分析**)
                     * 🚀 **[Tier 1 動能催化]** [來源標籤] [英文標題] - [詳細中文分析]
                     * ⚡ **[Tier 2 潛在影響]** [來源標籤] [英文標題] - [詳細中文分析]
                     * ⚪ **[Tier 3 普遍資訊]** [來源標籤] [英文標題] - [詳細中文分析]
@@ -546,7 +569,7 @@ with tab3:
                                 else: parsed_content = "⚠️ AI 無視標籤"
 
                             sector = df[df['商品'] == ticker]['產業'].iloc[0]
-                            curr_price, dist, rsi, rs_rating = get_dynamic_stats(ticker, spy_data)
+                            curr_price, dist, rsi, rs_rating, _ = get_dynamic_stats(ticker, spy_data)
                             history[ticker] = {
                                 "date": today_date,
                                 "content": parsed_content,
@@ -560,9 +583,34 @@ with tab3:
                         st.session_state.auto_scan = False
                         st.rerun()
 
+        # --- 全景報告區塊 ---
         else:
             st.success("✨ 所有標的已掃描完畢！")
             
+            # 🚀 RRG 圖表區塊 (新功能)
+            st.markdown("### 🔄 資金輪動雷達 (RRG 象限圖)")
+            if st.button("📈 生成 RRG 動態圖表 (需讀取歷史數據)"):
+                with st.spinner("正在為 127 檔股票計算相對強度輪動，請稍候..."):
+                    rrg_df = calculate_rrg_data(target_list)
+                    if not rrg_df.empty:
+                        fig_rrg = px.scatter(
+                            rrg_df, x="RS_Ratio", y="RS_Momentum", 
+                            color="Quadrant", hover_name="Ticker",
+                            title="Relative Rotation Graph (vs SPY)",
+                            color_discrete_map={
+                                "Leading (領先)": "green", "Weakening (轉弱)": "orange",
+                                "Lagging (落後)": "red", "Improving (改善)": "blue"
+                            }
+                        )
+                        # 畫十字線
+                        fig_rrg.add_hline(y=100, line_dash="dash", line_color="gray")
+                        fig_rrg.add_vline(x=100, line_dash="dash", line_color="gray")
+                        fig_rrg.update_layout(xaxis_title="JdK RS-Ratio (Trend)", yaxis_title="JdK RS-Momentum (Velocity)")
+                        st.plotly_chart(fig_rrg, use_container_width=True)
+                    else:
+                        st.error("無法獲取足夠數據生成 RRG 圖表。")
+
+            # 🚀 強制重掃按鈕
             if st.button("🔄 強制重新掃描今日清單 (清除當前名單快取)", type="secondary"):
                 for ticker in target_list:
                     if ticker in history: del history[ticker]
@@ -582,56 +630,45 @@ with tab3:
             if macro_cache_key in history:
                 report_content = history[macro_cache_key]['content']
                 report_placeholder.success("🎉 已載入今日報告 (快取)")
-                with report_placeholder.container():
-                    st.markdown(report_content)
+                with report_placeholder.container(): st.markdown(report_content)
+                
+                # PDF 下載區
+                with col_report_2:
+                    pdf_file_name = f"Alpha_Focus_Report_{today_date}.pdf"
+                    st.download_button("📥 下載 Markdown", report_content, file_name=f"Report_{today_date}.md")
+                    if st.button("📄 生成 PDF"):
+                        font_ready = generate_pdf_report(report_content, pdf_file_name)
+                        if font_ready: 
+                            with open(pdf_file_name, "rb") as f: st.download_button("下載 PDF", f, file_name=pdf_file_name)
             
             with col_report_1:
                 force_regen = st.button("🔄 生成/更新 全景報告 (消耗 API)")
 
-            if report_content:
-                with col_report_2:
-                    pdf_file_name = f"Alpha_Focus_Report_{today_date}.pdf"
-                    st.download_button(
-                        label="📥 下載報告 (Markdown格式 - 推薦)",
-                        data=report_content,
-                        file_name=f"Alpha_Focus_Report_{today_date}.md",
-                        mime="text/markdown"
-                    )
-                    if st.button("📄 生成 PDF (需中文字型)"):
-                        # 🚀 這裡調用修復後的 PDF 生成函數
-                        font_ready = generate_pdf_report(report_content, pdf_file_name)
-                        if font_ready:
-                            with open(pdf_file_name, "rb") as pdf_file:
-                                st.download_button(label="📥 點擊下載 PDF", data=pdf_file, file_name=pdf_file_name, mime="application/pdf")
-                        else:
-                            st.warning("⚠️ 系統未檢測到中文字體檔 (font.ttf)。請下載 Markdown 格式。")
-
             if force_regen:
-                if not api_key:
-                    st.error("請輸入 API Key！")
+                if not api_key: st.error("請輸入 API Key！")
                 else:
                     client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
-                    with st.spinner("正在生成報告..."):
+                    with st.spinner("正在生成機構級戰略報告..."):
                         aggregated_data_list = [history[t]['info_str'] for t in target_list if t in history and 'info_str' in history[t]]
                         final_all_data_text = "\n".join(aggregated_data_list)
-                        vix_latest = float(vix_data.iloc[-1]) if vix_data is not None else "未知"
-                        
                         macro_prompt = f"""
-                        # Role: 頂級華爾街宏觀對沖基金經理人 (Alpha Focus - 全景戰略)
-                        ## 報告日期: {today_date}
-                        ## 市場背景
-                        - VIX: {vix_latest}
+                        # Role: 頂級華爾街宏觀對沖基金經理人 (Alpha Focus)
+                        ## 報告日期: {today_date} | VIX: {vix_current:.2f}
                         ## 全量掃描數據 ({len(target_list)} 隻)
                         {final_all_data_text}
-                        ## 任務
-                        請產出全景戰略報告，包含：
-                        1. 最強板塊排行 (Top 5)
-                        2. Alpha Focus Top Picks
-                           - 🔥 **核心強勢突破名單**
-                           - 🎯 **狙擊手潛伏名單 (SMA21 乖離率 0-6% 完美打擊區)**
-                        3. 宏觀環境分析
-                        4. 戰略建議
-                        5. 關鍵風險提醒
+                        ## 任務：請產出機構級戰略報告
+                        1. **🔄 資金輪動雷達 (RRG 視角)**
+                           - 請分析哪些板塊正在進入 'Leading' (領先) 象限？
+                           - 哪些板塊正在 'Weakening' (轉弱)？
+                           - 有無 'Improving' (改善) 的黑馬板塊？
+                        2. **📊 市場寬度與強勢股排行**
+                           - Top 5 最強板塊
+                           - **🔥 核心強勢突破名單** (RS > 90)
+                           - **🎯 狙擊手潛伏名單** (RS > 90 且 距SMA21 0-6% 完美打擊區)
+                        3. **🚦 交易員操作指引 (Traffic Light)**
+                           - 根據 VIX ({vix_current}) 與上述市寬，判定當前是 綠燈(進攻)/黃燈(觀察)/紅燈(防守)？
+                           - 給出具體的倉位建議與止損策略。
+                        4. **關鍵風險提醒**
                         """
                         try:
                             macro_res = client.chat.completions.create(model='gemini-2.5-flash', messages=[{"role": "user", "content": macro_prompt}])
@@ -639,8 +676,7 @@ with tab3:
                             history[macro_cache_key] = {"date": today_date, "content": macro_text}
                             save_history(history)
                             st.rerun()
-                        except Exception as e:
-                            st.error(f"錯誤: {e}")
+                        except Exception as e: st.error(f"錯誤: {e}")
 
     else:
         st.info("👈 請先上傳 TradingView CSV 以啟動全景模式。")
