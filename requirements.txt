@@ -6,3 +6,4 @@ google-genai
 requests
 feedparser
 openai
+fpdf
