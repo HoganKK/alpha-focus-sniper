@@ -117,28 +117,37 @@ def get_triple_engine_news(ticker, fh_api_key, fh_limit=4, g_limit=3, y_limit=2)
     except: pass
     return news_pool
 
-# --- 🚀 Antman Greendot 計算引擎 ---
+# --- 🚀 Antman Greendot 計算引擎 (已修復 ValueError) ---
 def calculate_antman_signal(hist_data):
     if len(hist_data) < 25: return False, "數據不足"
     recent = hist_data.tail(5)
     if len(recent) < 5: return False, "數據不足"
+    
+    # 1. Momentum Check
     closes = recent['Close'].values
     days_up = 0
     for i in range(1, 5):
         if closes[i] > closes[i-1]: days_up += 1
-    price_change_4d = (closes[-1] - closes[0]) / closes[0]
-    momentum_pass = (days_up >= 3) and (price_change_4d > 0.06)
     
+    # 防止除以零
+    start_price = closes[0] if closes[0] != 0 else 0.01
+    price_change_4d = (closes[-1] - start_price) / start_price
+    momentum_pass = bool((days_up >= 3) and (price_change_4d > 0.06))
+    
+    # 2. Volume Check (修正 Series 錯誤)
     vol = hist_data['Volume']
-    avg_vol_4d = vol.tail(4).mean()
-    avg_vol_20d = vol.tail(24).iloc[:-4].mean() 
-    volume_pass = avg_vol_4d > (avg_vol_20d * 1.15)
+    avg_vol_4d = float(vol.tail(4).mean())
+    avg_vol_20d = float(vol.tail(24).iloc[:-4].mean())
+    # 防止均量為0
+    if avg_vol_20d == 0: avg_vol_20d = 1.0
+    volume_pass = bool(avg_vol_4d > (avg_vol_20d * 1.15))
     
+    # 3. Power Check
     opens = recent['Open'].values
     bull_days = 0
     for i in range(1, 5):
         if closes[i] > opens[i]: bull_days += 1
-    power_pass = bull_days >= 3
+    power_pass = bool(bull_days >= 3)
     
     is_antman = momentum_pass and volume_pass and power_pass
     signal_text = "🟢 **Antman Greendot 爆發訊號!**" if is_antman else "⚪ 無特殊訊號"
@@ -146,48 +155,35 @@ def calculate_antman_signal(hist_data):
 
 # --- 🚀 RRG 核心算法 (相對輪動圖) ---
 def calculate_rrg_data(tickers, benchmark_symbol="SPY", period="6mo"):
-    # 1. 批量獲取數據
     all_symbols = tickers + [benchmark_symbol]
     try:
         data = yf.download(all_symbols, period=period, interval="1d", progress=False)['Close']
     except:
-        return pd.DataFrame() # 獲取失敗
+        return pd.DataFrame()
 
     if data.empty or benchmark_symbol not in data.columns:
         return pd.DataFrame()
 
     rrg_results = []
-    
-    # 2. 計算 RRG 指標
     benchmark_series = data[benchmark_symbol]
     
     for ticker in tickers:
         if ticker not in data.columns: continue
         
-        # RS (Relative Strength) = Stock / Benchmark
         rs_series = data[ticker] / benchmark_series
-        
-        # RRG 趨勢指標 (JdK RS-Ratio 近似值): RS 與其移動平均線的距離
-        # 這裡使用 10日 RS 與 10日 MA 的比較，正規化到 100
         rs_ma = rs_series.rolling(window=10).mean()
-        # 簡單標準化：(RS / RS_MA) * 100
         rs_ratio = (rs_series / rs_ma) * 100
-        
-        # RRG 動能指標 (JdK RS-Momentum 近似值): RS-Ratio 的變化率
-        # (Ratio / Ratio_Prev) * 100
         rs_momentum = (rs_ratio / rs_ratio.shift(1)) * 100
         
-        # 取最新一天數據
         if len(rs_ratio) > 0 and not pd.isna(rs_ratio.iloc[-1]):
             latest_ratio = rs_ratio.iloc[-1]
             latest_mom = rs_momentum.iloc[-1]
             
-            # 判斷象限
             quadrant = ""
-            if latest_ratio > 100 and latest_mom > 100: quadrant = "Leading (領先)" # 綠
-            elif latest_ratio > 100 and latest_mom < 100: quadrant = "Weakening (轉弱)" # 黃
-            elif latest_ratio < 100 and latest_mom < 100: quadrant = "Lagging (落後)" # 紅
-            elif latest_ratio < 100 and latest_mom > 100: quadrant = "Improving (改善)" # 藍
+            if latest_ratio > 100 and latest_mom > 100: quadrant = "Leading (領先)" 
+            elif latest_ratio > 100 and latest_mom < 100: quadrant = "Weakening (轉弱)"
+            elif latest_ratio < 100 and latest_mom < 100: quadrant = "Lagging (落後)"
+            elif latest_ratio < 100 and latest_mom > 100: quadrant = "Improving (改善)"
             
             rrg_results.append({
                 "Ticker": ticker,
@@ -258,7 +254,7 @@ def get_dynamic_stats(ticker, spy_close):
 if "stock_selector" not in st.session_state: st.session_state.stock_selector = None
 
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 三引擎量化交易系統 v12.0 (機構戰略 RRG 版)")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v12.1 (RRG+Antman 修復版)")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
@@ -368,10 +364,13 @@ with tab1:
             
             real_price, real_sma_dist, real_rsi, real_rs_rating, stock_hist_df = get_dynamic_stats(selected_stock, spy_data)
             
-            # 🚀 計算 Antman Greendot
-            is_antman, antman_text = calculate_antman_signal(stock_hist_df)
-            if is_antman: st.success(antman_text)
-            else: st.info(antman_text)
+            # 🚀 計算 Antman Greendot (修復後)
+            if stock_hist_df is not None:
+                is_antman, antman_text = calculate_antman_signal(stock_hist_df)
+                if is_antman: st.success(antman_text)
+                else: st.info(antman_text)
+            else:
+                antman_text = "無法獲取歷史數據"
 
             today_date = datetime.now().strftime("%Y-%m-%d")
             
@@ -457,10 +456,11 @@ with tab2:
     else: st.info("👈 請上傳您的富途持倉 CSV。")
 
 # ---------------------------------------------------------
-# TAB 3: 宏觀與全景戰略 (RRG 升級)
+# TAB 3: 宏觀與全景戰略 (RRG + PDF + 狙擊手名單)
 # ---------------------------------------------------------
 with tab3:
     st.subheader("🗺️ 宏觀與全景戰略 (Alpha Focus Playbook)")
+    
     if 'auto_scan' not in st.session_state: st.session_state.auto_scan = False
 
     if uploaded_file:
@@ -497,7 +497,7 @@ with tab3:
                 if not api_key: st.error("無 API Key")
                 else:
                     client = OpenAI(api_key=api_key, base_url="https://xiaoai.plus/v1")
-                    # (定海神針解析機制，與前版相同)
+                    
                     with st.expander("💻 系統日誌", expanded=True):
                         log_area = st.empty()
                         if 'log_history' not in st.session_state: st.session_state.log_history = []
@@ -510,6 +510,7 @@ with tab3:
                     update_log(f"📦 正在打包 {len(current_batch)} 隻標的...")
                     all_tickers_data = ""
                     format_instructions = ""
+                    
                     for ticker in current_batch:
                         sector = df[df['商品'] == ticker]['產業'].iloc[0]
                         curr_price, dist, rsi, rs_rating, _ = get_dynamic_stats(ticker, spy_data)
@@ -518,6 +519,7 @@ with tab3:
                         all_tickers_data += f"【{ticker}】\n價格:{curr_price}, RS:{rs_rating:.0f}, 距SMA21:{dist:.2f}%, 板塊:{sector}\n新聞: {news_text}\n\n"
                         format_instructions += f"---START_REPORT_{ticker}---\n(內容)\n---END_REPORT_{ticker}---\n\n"
 
+                    # 🚀 批次 Prompt：要求詳細新聞與數據校驗
                     mega_prompt = f"""
                     # Role: 頂尖波段交易分析師 (Alpha Focus)
                     ## 數據清單：
@@ -530,7 +532,7 @@ with tab3:
                     **🛡️ 數據校驗**：* 價格：${{[填入價格]}} * 距SMA21：{{[填入距離]}}% * RS評級：{{[填入RS]}}
                     **🧠 動能與風險剖析**：[結合數據校驗給出判斷]
                     **📰 核心新聞矩陣**：
-                    (必須抄寫新聞來源例如[Finnhub 機構]，若無則寫「無」。每則 Tier 1/2/3 新聞請提供 **2-3 行詳盡分析**)
+                    (必須抄寫新聞來源例如[Finnhub 機構]，若無則寫「無」。請注意：每則 Tier 1/2/3 新聞，請提供 **2-3 行的詳盡分析**，包含具體數據、事件背景與對股價的潛在影響，不要只有簡短一句話。)
                     * 🚀 **[Tier 1 動能催化]** [來源標籤] [英文標題] - [詳細中文分析]
                     * ⚡ **[Tier 2 潛在影響]** [來源標籤] [英文標題] - [詳細中文分析]
                     * ⚪ **[Tier 3 普遍資訊]** [來源標籤] [英文標題] - [詳細中文分析]
@@ -563,6 +565,7 @@ with tab3:
                                 try: parsed_content = full_response_text.split(start_marker)[1].split(end_marker)[0].strip()
                                 except: parsed_content = "⚠️ 解析失敗"
                             else:
+                                # 正則表達式救援
                                 pattern = rf"---\s*START_REPORT_{ticker}\s*---(.*?)---\s*END_REPORT_{ticker}\s*---"
                                 match = re.search(pattern, full_response_text, re.IGNORECASE | re.DOTALL)
                                 if match: parsed_content = match.group(1).strip()
@@ -583,32 +586,42 @@ with tab3:
                         st.session_state.auto_scan = False
                         st.rerun()
 
-        # --- 全景報告區塊 ---
+        # --- 全景報告區塊 (RRG + PDF) ---
         else:
             st.success("✨ 所有標的已掃描完畢！")
             
-            # 🚀 RRG 圖表區塊 (新功能)
+            # 🚀 RRG 圖表區塊 (V12.0 新功能)
             st.markdown("### 🔄 資金輪動雷達 (RRG 象限圖)")
-            if st.button("📈 生成 RRG 動態圖表 (需讀取歷史數據)"):
-                with st.spinner("正在為 127 檔股票計算相對強度輪動，請稍候..."):
+            st.caption("分析資金如何在大盤 (SPY) 與個股之間輪動。尋找從 'Improving' 進入 'Leading' 的標的。")
+            
+            if st.button("📈 生成 RRG 動態圖表 (需實時運算)"):
+                with st.spinner("正在為清單中的股票計算相對強度輪動 (JdK RS-Ratio vs Momentum)，請稍候..."):
                     rrg_df = calculate_rrg_data(target_list)
                     if not rrg_df.empty:
+                        # 繪製 RRG 散點圖
                         fig_rrg = px.scatter(
                             rrg_df, x="RS_Ratio", y="RS_Momentum", 
                             color="Quadrant", hover_name="Ticker",
                             title="Relative Rotation Graph (vs SPY)",
+                            labels={"RS_Ratio": "JdK RS-Ratio (Trend)", "RS_Momentum": "JdK RS-Momentum (Velocity)"},
                             color_discrete_map={
                                 "Leading (領先)": "green", "Weakening (轉弱)": "orange",
                                 "Lagging (落後)": "red", "Improving (改善)": "blue"
                             }
                         )
-                        # 畫十字線
-                        fig_rrg.add_hline(y=100, line_dash="dash", line_color="gray")
-                        fig_rrg.add_vline(x=100, line_dash="dash", line_color="gray")
-                        fig_rrg.update_layout(xaxis_title="JdK RS-Ratio (Trend)", yaxis_title="JdK RS-Momentum (Velocity)")
+                        # 畫中心十字線 (100, 100)
+                        fig_rrg.add_hline(y=100, line_dash="dash", line_color="gray", opacity=0.5)
+                        fig_rrg.add_vline(x=100, line_dash="dash", line_color="gray", opacity=0.5)
+                        
+                        # 優化顯示範圍
+                        fig_rrg.update_layout(height=600)
                         st.plotly_chart(fig_rrg, use_container_width=True)
+                        
+                        # 顯示數據表供查閱
+                        with st.expander("查看 RRG 詳細數據表"):
+                            st.dataframe(rrg_df)
                     else:
-                        st.error("無法獲取足夠數據生成 RRG 圖表。")
+                        st.error("無法獲取足夠的歷史數據來生成 RRG 圖表。請檢查網絡或代碼是否正確。")
 
             # 🚀 強制重掃按鈕
             if st.button("🔄 強制重新掃描今日清單 (清除當前名單快取)", type="secondary"):
@@ -636,10 +649,12 @@ with tab3:
                 with col_report_2:
                     pdf_file_name = f"Alpha_Focus_Report_{today_date}.pdf"
                     st.download_button("📥 下載 Markdown", report_content, file_name=f"Report_{today_date}.md")
-                    if st.button("📄 生成 PDF"):
+                    if st.button("📄 生成 PDF (需中文字型)"):
                         font_ready = generate_pdf_report(report_content, pdf_file_name)
                         if font_ready: 
                             with open(pdf_file_name, "rb") as f: st.download_button("下載 PDF", f, file_name=pdf_file_name)
+                        else:
+                            st.warning("⚠️ 系統未檢測到中文字體檔 (font.ttf)，PDF 中文可能無法顯示。建議下載 Markdown。")
             
             with col_report_1:
                 force_regen = st.button("🔄 生成/更新 全景報告 (消耗 API)")
@@ -651,23 +666,29 @@ with tab3:
                     with st.spinner("正在生成機構級戰略報告..."):
                         aggregated_data_list = [history[t]['info_str'] for t in target_list if t in history and 'info_str' in history[t]]
                         final_all_data_text = "\n".join(aggregated_data_list)
+                        
+                        # 🚀 全景 Prompt 升級：包含 RRG、交通燈、狙擊手名單
                         macro_prompt = f"""
                         # Role: 頂級華爾街宏觀對沖基金經理人 (Alpha Focus)
                         ## 報告日期: {today_date} | VIX: {vix_current:.2f}
                         ## 全量掃描數據 ({len(target_list)} 隻)
                         {final_all_data_text}
+                        
                         ## 任務：請產出機構級戰略報告
                         1. **🔄 資金輪動雷達 (RRG 視角)**
-                           - 請分析哪些板塊正在進入 'Leading' (領先) 象限？
+                           - 請分析哪些板塊/個股正在進入 'Leading' (領先) 象限？
                            - 哪些板塊正在 'Weakening' (轉弱)？
                            - 有無 'Improving' (改善) 的黑馬板塊？
+                        
                         2. **📊 市場寬度與強勢股排行**
                            - Top 5 最強板塊
                            - **🔥 核心強勢突破名單** (RS > 90)
-                           - **🎯 狙擊手潛伏名單** (RS > 90 且 距SMA21 0-6% 完美打擊區)
+                           - **🎯 狙擊手潛伏名單 (SMA21 乖離率 0-6% 完美打擊區)**：請務必從名單中嚴格篩選出 5 檔 RS 極高，且與 SMA21 距離介於 0% 到 6% 之間的標的，並為這 5 檔股票附上簡短的「狙擊點評（包含盈虧比與進場邏輯）」。
+                        
                         3. **🚦 交易員操作指引 (Traffic Light)**
                            - 根據 VIX ({vix_current}) 與上述市寬，判定當前是 綠燈(進攻)/黃燈(觀察)/紅燈(防守)？
-                           - 給出具體的倉位建議與止損策略。
+                           - 給出具體的倉位建議 (例如 50% 現金) 與止損策略。
+                        
                         4. **關鍵風險提醒**
                         """
                         try:
