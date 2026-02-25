@@ -31,50 +31,90 @@ def save_history(history_data):
 
 history = load_history()
 
-# --- PDF 生成引擎 ---
+# --- PDF 生成引擎 (V12.6 排版緊湊優化版) ---
 class PDF(FPDF):
     def header(self):
         font_path = "font.ttf"
         if os.path.exists(font_path):
             try:
-                self.add_font('CustomFont', '', font_path)
+                self.add_font('CustomFont', '', font_path, uni=True)
                 self.set_font('CustomFont', '', 14)
             except:
                 self.set_font('Arial', 'B', 14)
         else:
             self.set_font('Arial', 'B', 14)
-        self.cell(0, 10, 'Alpha Focus Strategic Report', 0, 1, 'C')
-        self.ln(5)
+        self.cell(0, 10, 'Alpha Focus Institutional Report', 0, 1, 'C')
+        self.ln(5) # 標題後留一點點空間
 
 def remove_unsupported_chars(text):
+    # 保留基本標點與換行，移除特殊繪文字
     return re.sub(r'[^\w\s,.，。：:!！?？()（）\-\[\]%$\n]', '', text)
 
 def generate_pdf_report(content, filename="report.pdf"):
     pdf = PDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
+    
     font_path = "font.ttf"
     font_ready = False
     
     if os.path.exists(font_path):
         try:
             pdf.add_font('CustomFont', '', font_path, uni=True) 
-            pdf.set_font('CustomFont', '', 11)
+            pdf.set_font('CustomFont', '', 10) # 預設字體縮小一點，更像研報
             font_ready = True
         except:
-            pdf.set_font('Arial', '', 11)
+            pdf.set_font('Arial', '', 10)
     else:
-        pdf.set_font('Arial', '', 11)
+        pdf.set_font('Arial', '', 10)
     
+    # 智能解析內容
     lines = content.split('\n')
+    
     for line in lines:
-        clean_line = line.replace('**', '').replace('##', '').replace('#', '')
-        clean_line = remove_unsupported_chars(clean_line)
-        if clean_line.strip():
+        line = line.strip()
+        clean_line = remove_unsupported_chars(line)
+        
+        # 1. 處理空行：給一點點間距，不要太大
+        if not clean_line:
+            pdf.ln(2) 
+            continue
+            
+        # 2. 處理標題 (##)
+        if line.startswith('#'):
+            clean_text = clean_line.replace('#', '').strip()
+            pdf.ln(3) # 標題前加一點空間
+            pdf.set_font_size(13) # 字體加大
             try:
-                pdf.multi_cell(0, 8, clean_line)
-                pdf.ln(1) 
-            except:
-                pass
+                pdf.multi_cell(0, 8, clean_text) # 標題行高略大
+            except: pass
+            pdf.set_font_size(10) # 回復內文字體大小
+            
+        # 3. 處理列表 (* 或 -)
+        elif line.startswith('* ') or line.startswith('- '):
+            clean_text = clean_line[1:].strip() # 去掉符號
+            pdf.set_x(15) # 縮排效果
+            try:
+                pdf.multi_cell(0, 5, f"- {clean_text}") # 列表行高設為 5 (緊湊)
+            except: pass
+            
+        # 4. 處理強調文字 (** 或 數字開頭)
+        elif line.startswith('**') or re.match(r'^\d+\.', line):
+            clean_text = line.replace('**', '').replace('##', '')
+            clean_text = remove_unsupported_chars(clean_text)
+            pdf.ln(1) # 小間隔
+            try:
+                pdf.multi_cell(0, 6, clean_text) # 重點文字行高 6
+            except: pass
+            
+        # 5. 普通內文
+        else:
+            clean_text = line.replace('**', '')
+            clean_text = remove_unsupported_chars(clean_text)
+            try:
+                pdf.multi_cell(0, 5, clean_text) # 內文行高 5 (最緊湊)
+            except: pass
+
     pdf.output(filename)
     return font_ready
 
@@ -123,7 +163,6 @@ def calculate_rocket_signal(hist_data):
     recent = hist_data.tail(5)
     if len(recent) < 5: return False, "數據不足"
     
-    # 1. Momentum Check
     closes = recent['Close'].values
     days_up = 0
     for i in range(1, 5):
@@ -133,14 +172,12 @@ def calculate_rocket_signal(hist_data):
     price_change_4d = (closes[-1] - start_price) / start_price
     momentum_pass = bool((days_up >= 3) and (price_change_4d > 0.06))
     
-    # 2. Volume Check
     vol = hist_data['Volume']
     avg_vol_4d = float(vol.tail(4).mean())
     avg_vol_20d = float(vol.tail(24).iloc[:-4].mean())
     if avg_vol_20d == 0: avg_vol_20d = 1.0
     volume_pass = bool(avg_vol_4d > (avg_vol_20d * 1.15))
     
-    # 3. Power Check
     opens = recent['Open'].values
     bull_days = 0
     for i in range(1, 5):
@@ -252,7 +289,7 @@ def get_dynamic_stats(ticker, spy_close):
 if "stock_selector" not in st.session_state: st.session_state.stock_selector = None
 
 st.set_page_config(layout="wide", page_title="Alpha Focus Trading System")
-st.title("🦅 Alpha Focus 三引擎量化交易系統 v12.5 (復刻經典版)")
+st.title("🦅 Alpha Focus 三引擎量化交易系統 v12.6 (PDF排版緊湊版)")
 
 # ================= 側邊欄 =================
 st.sidebar.header("⚙️ 系統配置")
@@ -401,7 +438,6 @@ with tab1:
                             save_history(history)
                             st.success("更新完成！")
                         except Exception as e: st.error(str(e))
-
 # ---------------------------------------------------------
 # TAB 2: 守護者模式 (交通燈風控 + Rocket 監測)
 # ---------------------------------------------------------
@@ -526,8 +562,9 @@ with tab3:
                     
                     for ticker in current_batch:
                         sector = df[df['商品'] == ticker]['產業'].iloc[0]
-                        # 🚀 這裡必須計算 Rocket 訊號，以便存入 info_str 供大報告使用
                         curr_price, dist, rsi, rs_rating, stock_hist = get_dynamic_stats(ticker, spy_data)
+                        
+                        # 🚀 計算 Rocket 訊號
                         is_rocket, rocket_txt = calculate_rocket_signal(stock_hist)
                         rocket_tag = "[ROCKET!]" if is_rocket else ""
                         
@@ -589,7 +626,7 @@ with tab3:
                                 if match: parsed_content = match.group(1).strip()
                                 else: parsed_content = "⚠️ AI 無視標籤"
 
-                            # 重新計算一次 Rocket Tag 以確保 info_str 正確
+                            # 重新計算一次 Rocket Tag 以確保 info_str 正確 (帶入大報告)
                             sector = df[df['商品'] == ticker]['產業'].iloc[0]
                             curr_price, dist, rsi, rs_rating, stock_hist = get_dynamic_stats(ticker, spy_data)
                             is_rocket, _ = calculate_rocket_signal(stock_hist)
